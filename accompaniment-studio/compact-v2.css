@@ -1,0 +1,278 @@
+/* Accompaniment Studio compact desktop override v2
+   Loaded after styles.css so it also fixes clients with an older cached base stylesheet. */
+
+:root {
+  --track-h: 68px;
+  --label-w: 150px;
+}
+
+.app-shell {
+  width: min(1720px, calc(100% - 16px)) !important;
+  margin: 0 auto 20px !important;
+}
+
+.topbar {
+  padding: 10px 0 8px !important;
+  gap: 12px !important;
+}
+
+h1 {
+  font-size: clamp(22px, 2.5vw, 30px) !important;
+  line-height: 1.05 !important;
+}
+
+.eyebrow {
+  margin-bottom: 2px !important;
+  font-size: 9px !important;
+}
+
+.panel {
+  border-radius: 12px !important;
+}
+
+.btn,
+.icon-btn {
+  padding: 7px 10px !important;
+  border-radius: 8px !important;
+}
+
+/* Strict desktop composition: video at left, transport + source waveform at right. */
+.player-card {
+  display: grid !important;
+  grid-template-columns: minmax(360px, 560px) minmax(0, 1fr) !important;
+  grid-template-areas:
+    "media transport"
+    "media source" !important;
+  grid-template-rows: auto 1fr !important;
+  gap: 8px 12px !important;
+  padding: 9px !important;
+  align-items: start !important;
+}
+
+.media-stage {
+  grid-area: media !important;
+  width: 100% !important;
+  max-width: 560px !important;
+  height: auto !important;
+  min-height: 0 !important;
+  max-height: none !important;
+  aspect-ratio: 16 / 9 !important;
+  align-self: start !important;
+  justify-self: start !important;
+  overflow: hidden !important;
+  border-radius: 10px !important;
+  background: #02040a !important;
+}
+
+#mediaElement {
+  width: 100% !important;
+  height: 100% !important;
+  max-width: none !important;
+  aspect-ratio: 16 / 9 !important;
+  object-fit: contain !important;
+  background: #02040a !important;
+}
+
+.transport {
+  grid-area: transport !important;
+  padding: 0 0 6px !important;
+  gap: 6px !important;
+  flex-wrap: wrap !important;
+  align-self: start !important;
+}
+
+.icon-btn {
+  min-width: 40px !important;
+}
+
+.icon-btn.big {
+  min-width: 44px !important;
+}
+
+.time-readout {
+  min-width: 126px !important;
+  font-size: 12px !important;
+}
+
+.check-label {
+  font-size: 11px !important;
+}
+
+.source-wave-wrap {
+  grid-area: source !important;
+  height: 92px !important;
+  min-height: 92px !important;
+  max-height: 92px !important;
+  align-self: end !important;
+  grid-template-columns: var(--label-w) 1fr !important;
+  border-radius: 9px !important;
+}
+
+.wave-canvas {
+  height: 92px !important;
+  min-height: 92px !important;
+}
+
+.row-label {
+  padding: 8px !important;
+  font-size: 9px !important;
+}
+
+/* Editing controls stay shallow and close to the player. */
+.toolbar {
+  margin-top: 8px !important;
+  padding: 8px !important;
+  gap: 6px !important;
+}
+
+.toolbar-group {
+  gap: 6px !important;
+}
+
+.toolbar .btn {
+  padding: 7px 9px !important;
+  font-size: 12px !important;
+}
+
+.timeline {
+  margin-top: 8px !important;
+  padding: 9px !important;
+}
+
+.timeline-head {
+  margin-bottom: 6px !important;
+  gap: 12px !important;
+}
+
+.timeline-head h2 {
+  font-size: 16px !important;
+}
+
+.timeline-head p {
+  margin-top: 1px !important;
+  font-size: 10px !important;
+}
+
+.zoom-control {
+  font-size: 11px !important;
+}
+
+.timeline-scroller {
+  min-height: 132px !important;
+  max-height: 205px !important;
+  border-radius: 9px !important;
+}
+
+.ruler {
+  height: 24px !important;
+}
+
+.track-row {
+  height: var(--track-h) !important;
+}
+
+.track-label {
+  padding: 6px 7px !important;
+  gap: 4px !important;
+}
+
+.track-name {
+  width: 92px !important;
+  font-size: 11px !important;
+}
+
+.clip {
+  top: 6px !important;
+  height: 56px !important;
+}
+
+.bottom-grid {
+  gap: 8px !important;
+  margin-top: 8px !important;
+}
+
+.mixer-panel,
+.transcript-panel {
+  min-height: 220px !important;
+  padding: 9px !important;
+}
+
+.section-title-row {
+  margin-bottom: 7px !important;
+}
+
+.mixer-list {
+  gap: 5px !important;
+}
+
+.mixer-strip {
+  padding: 6px 7px !important;
+  gap: 6px !important;
+}
+
+.transcript-editor {
+  min-height: 105px !important;
+  padding: 9px !important;
+}
+
+.status-box {
+  margin-bottom: 7px !important;
+  padding: 7px 9px !important;
+}
+
+.caption-list {
+  margin-top: 7px !important;
+  max-height: 145px !important;
+}
+
+/* Stack only when the window is genuinely too narrow for two useful columns. */
+@media (max-width: 1040px) {
+  .player-card {
+    grid-template-columns: 1fr !important;
+    grid-template-areas:
+      "media"
+      "transport"
+      "source" !important;
+  }
+
+  .media-stage {
+    width: min(100%, 720px) !important;
+    max-width: 720px !important;
+    justify-self: center !important;
+  }
+
+  .source-wave-wrap {
+    height: 78px !important;
+    min-height: 78px !important;
+    max-height: 78px !important;
+  }
+
+  .wave-canvas {
+    height: 78px !important;
+    min-height: 78px !important;
+  }
+}
+
+@media (max-width: 700px) {
+  :root { --label-w: 118px; }
+
+  .app-shell {
+    width: calc(100% - 10px) !important;
+  }
+
+  .topbar {
+    align-items: flex-start !important;
+  }
+
+  .top-actions {
+    gap: 5px !important;
+  }
+
+  .toolbar-group.right {
+    margin-left: 0 !important;
+  }
+
+  .timeline-scroller {
+    max-height: 190px !important;
+  }
+}
