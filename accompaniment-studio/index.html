@@ -80,11 +80,11 @@
         <div class="timeline-head">
           <div>
             <h2>Timeline</h2>
-            <p>Layer 1 is the locked source reference. Record on Layers 2+ and drag takes left or right until their waveform peaks line up with the source.</p>
+            <p>Layer 1 is the locked source reference. Zoom 0 fits the full source; increase zoom to expand the waveforms for precise dub alignment.</p>
           </div>
           <div class="zoom-control">
             <span>Zoom</span>
-            <input id="zoomSlider" type="range" min="40" max="220" value="90" />
+            <input id="zoomSlider" type="range" min="0" max="100" step="1" value="0" title="0 = fit full media; increase for detail" />
           </div>
         </div>
         <div id="timelineScroller" class="timeline-scroller">
@@ -125,6 +125,6 @@
   <input id="trackImportInput" type="file" accept="audio/*" hidden />
 
   <script src="https://cdn.jsdelivr.net/npm/lamejs@1.2.1/lame.min.js"></script>
-  <script type="module" src="app-loader.js?v=20260901-6"></script>
+  <script type="module" src="app-loader.js?v=20260901-7"></script>
 </body>
 </html>
