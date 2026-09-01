@@ -20,6 +20,17 @@ oCanvas(canvas, buffer, startSec = 0, endSec = null, color = '#a78bfa') {
   }
 }
 function drawSourceWaveform() { drawWaveformToCanvas(els.sourceWave, state.sourceBuffer, 0, state.sourceBuffer?.duration || null, '#38bdf8'); }
+function appendWaveformTiles(container,buffer,startSec=0,endSec=null,color='#e9d5ff'){
+  if(!buffer)return;
+  const end=Math.min(endSec??buffer.duration,buffer.duration);const duration=Math.max(0,end-startSec);if(!duration)return;
+  const maxTilePx=4800;const tileSeconds=Math.max(2,maxTilePx/state.pxPerSecond);
+  for(let offset=0;offset<duration;offset+=tileSeconds){
+    const tileStart=startSec+offset,tileEnd=Math.min(end,tileStart+tileSeconds);
+    const canvas=document.createElement('canvas');canvas.className='waveform-tile';
+    canvas.style.position='absolute';canvas.style.left=`${offset*state.pxPerSecond}px`;canvas.style.top='0';canvas.style.height='100%';canvas.style.width=`${Math.max(1,(tileEnd-tileStart)*state.pxPerSecond)}px`;
+    container.appendChild(canvas);requestAnimationFrame(()=>drawWaveformToCanvas(canvas,buffer,tileStart,tileEnd,color));
+  }
+}
 
 function renderAll() { renderTimeline(); renderMixer(); renderTranscript(); updateButtons(); }
 function renderTimeline() {
@@ -64,9 +75,8 @@ function renderSourceTimelineTrack(laneWidth){
   lane.addEventListener('dblclick',e=>{const rect=lane.getBoundingClientRect();seekTimeline((e.clientX-rect.left)/state.pxPerSecond);});
   if(state.sourceObjectUrl&&state.duration>0){
     const clip=document.createElement('div');clip.className='clip source-clip';clip.style.left='0px';clip.style.width=`${Math.max(8,state.duration*state.pxPerSecond)}px`;
-    const name=document.createElement('div');name.className='clip-name';name.textContent=state.sourceFileName||'Source media';
-    const canvas=document.createElement('canvas');clip.append(name,canvas);
-    requestAnimationFrame(()=>drawWaveformToCanvas(canvas,state.sourceBuffer,0,state.sourceBuffer?.duration||state.duration,'#38bdf8'));
+    const name=document.createElement('div');name.className='clip-name';name.textContent=state.sourceFileName||'Source media';clip.appendChild(name);
+    appendWaveformTiles(clip,state.sourceBuffer,0,state.sourceBuffer?.duration||state.duration,'#38bdf8');
     clip.addEventListener('click',e=>{e.stopPropagation();const rect=clip.getBoundingClientRect();seekTimeline((e.clientX-rect.left)/state.pxPerSecond);});
     lane.appendChild(clip);
   }else{
@@ -78,9 +88,8 @@ function miniButton(text, onClick) { const b=document.createElement('button');b.
 function renderClip(track, clip) {
   const el=document.createElement('div'); el.className=`clip${clip.id===state.selectedClipId?' selected':''}`; el.dataset.clipId=clip.id;
   el.style.left=`${clip.start*state.pxPerSecond}px`; el.style.width=`${Math.max(8,clipDuration(clip)*state.pxPerSecond)}px`;
-  const label=document.createElement('div'); label.className='clip-name'; label.textContent=clip.name||track.name;
-  const canvas=document.createElement('canvas'); el.append(label,canvas);
-  requestAnimationFrame(()=>drawWaveformToCanvas(canvas,clip.buffer,clip.trimStart,clip.trimEnd,'#e9d5ff'));
+  const label=document.createElement('div'); label.className='clip-name'; label.textContent=clip.name||track.name;el.appendChild(label);
+  appendWaveformTiles(el,clip.buffer,clip.trimStart,clip.trimEnd,'#e9d5ff');
   el.addEventListener('click', e=>{e.stopPropagation();state.selectedTrackId=track.id;state.selectedClipId=clip.id;renderTimeline();updateButtons();});
   let dragStartX=0, originalStart=0;
   el.addEventListener('pointerdown', e=>{
