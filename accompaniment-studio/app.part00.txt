@@ -1,0 +1,111 @@
+const $ = (id) => document.getElementById(id);
+
+const els = {
+  mediaInput: $('mediaInput'), media: $('mediaElement'), emptyMedia: $('emptyMedia'), captionOverlay: $('captionOverlay'),
+  newProjectBtn: $('newProjectBtn'), playBtn: $('playBtn'), rewindBtn: $('rewindBtn'), forwardBtn: $('forwardBtn'), timeReadout: $('timeReadout'),
+  sourceWave: $('sourceWave'), sourcePlayhead: $('sourcePlayhead'), addTrackBtn: $('addTrackBtn'), recordBtn: $('recordBtn'), stopBtn: $('stopBtn'),
+  splitBtn: $('splitBtn'), trimStartBtn: $('trimStartBtn'), trimEndBtn: $('trimEndBtn'), deleteClipBtn: $('deleteClipBtn'),
+  transcribeBtn: $('transcribeBtn'), exportMp3Btn: $('exportMp3Btn'), exportTranscriptBtn: $('exportTranscriptBtn'), exportCaptionsBtn: $('exportCaptionsBtn'),
+  timelineScroller: $('timelineScroller'), ruler: $('ruler'), tracks: $('tracks'), timelinePlayhead: $('timelinePlayhead'), zoomSlider: $('zoomSlider'),
+  mixerList: $('mixerList'), transcriptionStatus: $('transcriptionStatus'), transcriptEditor: $('transcriptEditor'), captionList: $('captionList'),
+  captionsToggle: $('captionsToggle'), includeSourceToggle: $('includeSourceToggle'), metronomeToggle: $('metronomeToggle'), toast: $('toast'),
+  trackImportInput: $('trackImportInput')
+};
+
+const state = {
+  audioCtx: null,
+  sourceBuffer: null,
+  sourceObjectUrl: null,
+  sourceFileName: '',
+  duration: 0,
+  pxPerSecond: 90,
+  tracks: [],
+  selectedTrackId: null,
+  selectedClipId: null,
+  isRecording: false,
+  recorder: null,
+  recorderStream: null,
+  recordStartTime: 0,
+  recordChunks: [],
+  playbackNodes: [],
+  playbackStartCtxTime: 0,
+  playbackStartTimelineTime: 0,
+  animationFrame: null,
+  transcriptSegments: [],
+  transcriber: null,
+  importTargetTrackId: null,
+  idCounter: 1,
+};
+
+function uid(prefix) { return `${prefix}-${state.idCounter++}-${Date.now().toString(36)}`; }
+function clamp(n, min, max) { return Math.max(min, Math.min(max, n)); }
+function formatTime(sec, precise = false) {
+  if (!Number.isFinite(sec)) sec = 0;
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return `${String(m).padStart(2,'0')}:${precise ? s.toFixed(1).padStart(4,'0') : String(Math.floor(s)).padStart(2,'0')}`;
+}
+function notify(msg) {
+  els.toast.textContent = msg; els.toast.hidden = false;
+  clearTimeout(notify.t); notify.t = setTimeout(() => els.toast.hidden = true, 2800);
+}
+async function ensureAudioContext() {
+  if (!state.audioCtx) state.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (state.audioCtx.state === 'suspended') await state.audioCtx.resume();
+  return state.audioCtx;
+}
+
+function projectEnd() {
+  const clipEnd = state.tracks.flatMap(t => t.clips).reduce((m,c) => Math.max(m, c.start + clipDuration(c)), 0);
+  return Math.max(state.duration || 0, clipEnd, 5);
+}
+function clipDuration(c) { return Math.max(0, (c.trimEnd ?? c.buffer.duration) - (c.trimStart ?? 0)); }
+function selectedClip() {
+  for (const track of state.tracks) {
+    const clip = track.clips.find(c => c.id === state.selectedClipId);
+    if (clip) return { clip, track };
+  }
+  return null;
+}
+function selectedTrack() { return state.tracks.find(t => t.id === state.selectedTrackId) || null; }
+
+function createTrack(name) {
+  const track = { id: uid('track'), name: name || `Layer ${state.tracks.length + 1}`, volume: 1, muted: false, solo: false, clips: [] };
+  state.tracks.push(track);
+  state.selectedTrackId = track.id;
+  renderAll();
+  return track;
+}
+
+function resetProject() {
+  stopPlayback();
+  if (state.sourceObjectUrl) URL.revokeObjectURL(state.sourceObjectUrl);
+  state.sourceObjectUrl = null; state.sourceBuffer = null; state.sourceFileName = ''; state.duration = 0;
+  state.tracks = []; state.selectedClipId = null; state.selectedTrackId = null;
+  state.transcriptSegments = []; state.transcriber = null;
+  els.media.removeAttribute('src'); els.media.load(); els.media.style.display = 'none'; els.emptyMedia.style.display = 'flex';
+  els.transcriptEditor.value = ''; els.captionOverlay.hidden = true;
+  renderAll(); drawSourceWaveform();
+  createTrack('Layer 1');
+}
+
+async function loadMedia(file) {
+  if (!file) return;
+  stopPlayback();
+  const ctx = await ensureAudioContext();
+  const arr = await file.arrayBuffer();
+  try { state.sourceBuffer = await ctx.decodeAudioData(arr.slice(0)); }
+  catch { state.sourceBuffer = null; }
+  if (state.sourceObjectUrl) URL.revokeObjectURL(state.sourceObjectUrl);
+  state.sourceObjectUrl = URL.createObjectURL(file);
+  state.sourceFileName = file.name;
+  els.media.src = state.sourceObjectUrl;
+  els.media.style.display = 'block'; els.emptyMedia.style.display = 'none';
+  await new Promise(resolve => { els.media.onloadedmetadata = () => resolve(); els.media.onerror = () => resolve(); });
+  state.duration = Number.isFinite(els.media.duration) ? els.media.duration : (state.sourceBuffer?.duration || 0);
+  els.media.currentTime = 0;
+  drawSourceWaveform(); renderTimeline(); updateButtons();
+  notify(`Loaded ${file.name}`);
+}
+
+function drawWaveformT
