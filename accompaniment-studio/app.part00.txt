@@ -83,10 +83,11 @@ function resetProject() {
   state.sourceObjectUrl = null; state.sourceBuffer = null; state.sourceFileName = ''; state.duration = 0;
   state.tracks = []; state.selectedClipId = null; state.selectedTrackId = null;
   state.transcriptSegments = []; state.transcriber = null;
+  const initialTrack={id:uid('track'),name:'Layer 2',volume:1,muted:false,solo:false,clips:[]};
+  state.tracks.push(initialTrack);state.selectedTrackId=initialTrack.id;
   els.media.removeAttribute('src'); els.media.load(); els.media.style.display = 'none'; els.emptyMedia.style.display = 'flex';
   els.transcriptEditor.value = ''; els.captionOverlay.hidden = true;
   renderAll(); drawSourceWaveform();
-  createTrack('Layer 2');
 }
 
 async function loadMedia(file) {
