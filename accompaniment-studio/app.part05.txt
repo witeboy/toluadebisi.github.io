@@ -4,21 +4,37 @@ function exportTranscript(){const txt=els.transcriptEditor.value.trim();if(!txt)
 function toSrtTime(sec){const ms=Math.max(0,Math.round(sec*1000)),h=Math.floor(ms/3600000),m=Math.floor(ms%3600000/60000),s=Math.floor(ms%60000/1000),r=ms%1000;return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')},${String(r).padStart(3,'0')}`;}
 function exportCaptions(){const srt=state.transcriptSegments.map((s,i)=>`${i+1}\n${toSrtTime(s.start)} --> ${toSrtTime(s.end)}\n${s.text}\n`).join('\n');downloadBlob(new Blob([srt],{type:'application/x-subrip'}),`${baseName(state.sourceFileName)||'recording'}-captions.srt`);}
 
+state.isPlaying=false;
+state.discardRecording=false;
+
 els.mediaInput.addEventListener('change',e=>loadMedia(e.target.files?.[0]));
 els.newProjectBtn.addEventListener('click',resetProject);
 els.addTrackBtn.addEventListener('click',()=>createTrack());
-els.playBtn.addEventListener('click',togglePlayback);els.rewindBtn.addEventListener('click',()=>seekTimeline(currentTimelineTime()-5));els.forwardBtn.addEventListener('click',()=>seekTimeline(currentTimelineTime()+5));
+els.playBtn.addEventListener('click',()=>togglePlayback().catch(err=>console.error(err)));
+els.rewindBtn.addEventListener('click',()=>seekTimeline(currentTimelineTime()-5));els.forwardBtn.addEventListener('click',()=>seekTimeline(currentTimelineTime()+5));
 els.recordBtn.addEventListener('click',beginRecording);els.stopBtn.addEventListener('click',stopRecording);
 els.splitBtn.addEventListener('click',splitSelected);els.trimStartBtn.addEventListener('click',trimStart);els.trimEndBtn.addEventListener('click',trimEnd);els.deleteClipBtn.addEventListener('click',deleteSelectedClip);
 els.exportMp3Btn.addEventListener('click',exportMp3);els.transcribeBtn.addEventListener('click',transcribeMix);els.exportTranscriptBtn.addEventListener('click',exportTranscript);els.exportCaptionsBtn.addEventListener('click',exportCaptions);
 els.zoomSlider.addEventListener('input',()=>{state.pxPerSecond=Number(els.zoomSlider.value);renderTimeline();});
 els.transcriptEditor.addEventListener('input',updateButtons);els.captionsToggle.addEventListener('change',()=>updateCaptionOverlay(currentTimelineTime()));
 els.trackImportInput.addEventListener('change',e=>{importAudioToTrack(e.target.files?.[0],state.importTargetTrackId);e.target.value='';});
-els.timelineScroller.addEventListener('click',e=>{ if(e.target.closest('.clip,.track-label'))return; const rect=els.timelineScroller.getBoundingClientRect();const x=e.clientX-rect.left+els.timelineScroller.scrollLeft-parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--label-w'));if(x>=0)seekTimeline(x/state.pxPerSecond); });
-els.media.addEventListener('timeupdate',()=>{if(!state.playbackNodes.length)updatePlayhead(els.media.currentTime);updateCaptionOverlay(els.media.currentTime);});
-els.media.addEventListener('play',()=>{if(!state.playbackNodes.length)startPlayback(els.media.currentTime);});
-els.media.addEventListener('pause',()=>{if(state.playbackNodes.length&&!state.isRecording)stopPlayback();});
+els.timelineScroller.addEventListener('click',e=>{if(e.target.closest('.clip,.track-label'))return;const rect=els.timelineScroller.getBoundingClientRect();const x=e.clientX-rect.left+els.timelineScroller.scrollLeft-parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--label-w'));if(x>=0)seekTimeline(x/state.pxPerSecond);});
+els.media.addEventListener('timeupdate',()=>{if(!state.isPlaying)updatePlayhead(els.media.currentTime);updateCaptionOverlay(els.media.currentTime);});
+els.media.addEventListener('play',()=>{
+  if(state.isPlaying)return;
+  startPlayback(els.media.currentTime,{playMedia:false}).catch(err=>console.error('Could not synchronize native media playback',err));
+});
+els.media.addEventListener('pause',()=>{
+  if(!state.isPlaying)return;
+  if(state.isRecording){stopRecording();return;}
+  stopPlayback(true,false);
+});
+els.media.addEventListener('ended',()=>{
+  if(state.isRecording){stopRecording();return;}
+  stopPlayback(true,false);updatePlayhead(state.duration||els.media.currentTime);
+});
+els.media.addEventListener('error',()=>{const detail=els.media.error?.message||'This media format may not be supported by the browser.';console.error('Media element error',els.media.error);notify(`Media playback error: ${detail}`);});
 window.addEventListener('resize',()=>{drawSourceWaveform();renderTimeline();});
-window.addEventListener('keydown',e=>{if(e.target.matches('input,textarea'))return;if(e.code==='Space'){e.preventDefault();togglePlayback();}if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='k'){e.preventDefault();splitSelected();}});
+window.addEventListener('keydown',e=>{if(e.target.matches('input,textarea'))return;if(e.code==='Space'){e.preventDefault();togglePlayback().catch(err=>console.error(err));}if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='k'){e.preventDefault();splitSelected();}});
 
 resetProject();
