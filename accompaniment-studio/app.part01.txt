@@ -1,0 +1,71 @@
+oCanvas(canvas, buffer, startSec = 0, endSec = null, color = '#a78bfa') {
+  const rect = canvas.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  const width = Math.max(1, Math.floor(rect.width * dpr));
+  const height = Math.max(1, Math.floor(rect.height * dpr));
+  if (canvas.width !== width || canvas.height !== height) { canvas.width = width; canvas.height = height; }
+  const g = canvas.getContext('2d'); g.clearRect(0,0,width,height);
+  g.fillStyle = 'rgba(255,255,255,.03)'; g.fillRect(0,0,width,height);
+  if (!buffer) return;
+  const channel = buffer.getChannelData(0);
+  const sr = buffer.sampleRate;
+  const s0 = Math.floor(startSec * sr), s1 = Math.floor((endSec ?? buffer.duration) * sr);
+  const length = Math.max(1, s1 - s0); const step = Math.max(1, Math.floor(length / width));
+  g.fillStyle = color;
+  for (let x = 0; x < width; x++) {
+    const from = s0 + x * step; const to = Math.min(s1, from + step); let min=1, max=-1;
+    for (let i=from;i<to;i+=Math.max(1,Math.floor(step/8))) { const v=channel[i]||0; if(v<min)min=v;if(v>max)max=v; }
+    const y1=(1-max)*height/2, y2=(1-min)*height/2;
+    g.fillRect(x, y1, 1, Math.max(1, y2-y1));
+  }
+}
+function drawSourceWaveform() { drawWaveformToCanvas(els.sourceWave, state.sourceBuffer, 0, state.sourceBuffer?.duration || null, '#38bdf8'); }
+
+function renderAll() { renderTimeline(); renderMixer(); renderTranscript(); updateButtons(); }
+function renderTimeline() {
+  const total = projectEnd(); const laneWidth = Math.max(700, Math.ceil(total * state.pxPerSecond));
+  els.ruler.style.width = `${laneWidth}px`; els.ruler.innerHTML = '';
+  const interval = state.pxPerSecond >= 150 ? 1 : state.pxPerSecond >= 75 ? 5 : 10;
+  for (let t=0; t<=total; t+=interval) {
+    const mark = document.createElement('div'); mark.className='ruler-mark'; mark.style.left=`${t*state.pxPerSecond}px`; mark.textContent=formatTime(t); els.ruler.appendChild(mark);
+  }
+  els.tracks.innerHTML='';
+  if (!state.tracks.length) createTrack('Layer 1');
+  for (const track of state.tracks) {
+    const row=document.createElement('div'); row.className='track-row'; row.dataset.trackId=track.id;
+    const label=document.createElement('div'); label.className='track-label';
+    const titleLine=document.createElement('div'); titleLine.className='track-title-line';
+    const name=document.createElement('input'); name.className='track-name'; name.value=track.name; name.addEventListener('change',()=>{track.name=name.value.trim()||track.name;renderMixer();});
+    titleLine.append(name);
+    const tools=document.createElement('div'); tools.className='track-tools';
+    const arm=miniButton(track.id===state.selectedTrackId?'ARMED':'ARM',()=>{state.selectedTrackId=track.id; renderTimeline(); updateButtons();});
+    const imp=miniButton('IMPORT',()=>{state.importTargetTrackId=track.id;els.trackImportInput.click();});
+    const del=miniButton('DELETE',()=>deleteTrack(track.id));
+    tools.append(arm,imp,del); label.append(titleLine,tools);
+    const lane=document.createElement('div'); lane.className='track-lane'; lane.style.width=`${laneWidth}px`;
+    lane.addEventListener('dblclick', e => { const rect=lane.getBoundingClientRect(); seekTimeline((e.clientX-rect.left)/state.pxPerSecond); });
+    for(const clip of track.clips) lane.appendChild(renderClip(track,clip));
+    row.append(label,lane); els.tracks.appendChild(row);
+  }
+  updatePlayhead();
+}
+function miniButton(text, onClick) { const b=document.createElement('button');b.className='mini-btn';b.textContent=text;b.addEventListener('click',onClick);return b; }
+function renderClip(track, clip) {
+  const el=document.createElement('div'); el.className=`clip${clip.id===state.selectedClipId?' selected':''}`; el.dataset.clipId=clip.id;
+  el.style.left=`${clip.start*state.pxPerSecond}px`; el.style.width=`${Math.max(8,clipDuration(clip)*state.pxPerSecond)}px`;
+  const label=document.createElement('div'); label.className='clip-name'; label.textContent=clip.name||track.name;
+  const canvas=document.createElement('canvas'); el.append(label,canvas);
+  requestAnimationFrame(()=>drawWaveformToCanvas(canvas,clip.buffer,clip.trimStart,clip.trimEnd,'#e9d5ff'));
+  el.addEventListener('click', e=>{e.stopPropagation();state.selectedTrackId=track.id;state.selectedClipId=clip.id;renderTimeline();updateButtons();});
+  let dragStartX=0, originalStart=0;
+  el.addEventListener('pointerdown', e=>{
+    if(e.button!==0)return; dragStartX=e.clientX; originalStart=clip.start; el.setPointerCapture(e.pointerId); el.classList.add('dragging');
+  });
+  el.addEventListener('pointermove', e=>{
+    if(!el.hasPointerCapture(e.pointerId))return; clip.start=Math.max(0,originalStart+(e.clientX-dragStartX)/state.pxPerSecond); el.style.left=`${clip.start*state.pxPerSecond}px`;
+  });
+  el.addEventListener('pointerup', e=>{ if(el.hasPointerCapture(e.pointerId))el.releasePointerCapture(e.pointerId);el.classList.remove('dragging');renderTimeline(); });
+  return el;
+}
+function deleteTrack(id) {
+  
