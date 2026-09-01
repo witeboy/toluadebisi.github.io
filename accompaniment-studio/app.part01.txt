@@ -34,9 +34,11 @@ function appendWaveformTiles(container,buffer,startSec=0,endSec=null,color='#e9d
 
 function renderAll() { renderTimeline(); renderMixer(); renderTranscript(); updateButtons(); }
 function renderTimeline() {
-  const total = projectEnd(); const laneWidth = Math.max(700, Math.ceil(total * state.pxPerSecond));
+  refreshTimelineScale();
+  const total = projectEnd();
+  const laneWidth = Math.max(timelineViewportWidth(), Math.ceil(total * state.pxPerSecond));
   els.ruler.style.width = `${laneWidth}px`; els.ruler.innerHTML = '';
-  const interval = state.pxPerSecond >= 150 ? 1 : state.pxPerSecond >= 75 ? 5 : 10;
+  const interval = rulerIntervalSeconds();
   for (let t=0; t<=total; t+=interval) {
     const mark = document.createElement('div'); mark.className='ruler-mark'; mark.style.left=`${t*state.pxPerSecond}px`; mark.textContent=formatTime(t); els.ruler.appendChild(mark);
   }
