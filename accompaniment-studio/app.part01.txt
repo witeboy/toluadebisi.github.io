@@ -30,7 +30,11 @@ function renderTimeline() {
     const mark = document.createElement('div'); mark.className='ruler-mark'; mark.style.left=`${t*state.pxPerSecond}px`; mark.textContent=formatTime(t); els.ruler.appendChild(mark);
   }
   els.tracks.innerHTML='';
-  if (!state.tracks.length) createTrack('Layer 1');
+  renderSourceTimelineTrack(laneWidth);
+  if (!state.tracks.length) {
+    const track={id:uid('track'),name:'Layer 2',volume:1,muted:false,solo:false,clips:[]};
+    state.tracks.push(track);state.selectedTrackId=track.id;
+  }
   for (const track of state.tracks) {
     const row=document.createElement('div'); row.className='track-row'; row.dataset.trackId=track.id;
     const label=document.createElement('div'); label.className='track-label';
@@ -48,6 +52,27 @@ function renderTimeline() {
     row.append(label,lane); els.tracks.appendChild(row);
   }
   updatePlayhead();
+}
+function renderSourceTimelineTrack(laneWidth){
+  const row=document.createElement('div');row.className='track-row source-track-row';row.dataset.trackId='source';
+  const label=document.createElement('div');label.className='track-label source-track-label';
+  const title=document.createElement('div');title.className='source-track-title';title.textContent='Layer 1';
+  const meta=document.createElement('div');meta.className='source-track-meta';meta.textContent='SOURCE · LOCKED';
+  const file=document.createElement('div');file.className='source-track-file';file.textContent=state.sourceFileName||'Load source media';
+  label.append(title,meta,file);
+  const lane=document.createElement('div');lane.className='track-lane source-track-lane';lane.style.width=`${laneWidth}px`;
+  lane.addEventListener('dblclick',e=>{const rect=lane.getBoundingClientRect();seekTimeline((e.clientX-rect.left)/state.pxPerSecond);});
+  if(state.sourceObjectUrl&&state.duration>0){
+    const clip=document.createElement('div');clip.className='clip source-clip';clip.style.left='0px';clip.style.width=`${Math.max(8,state.duration*state.pxPerSecond)}px`;
+    const name=document.createElement('div');name.className='clip-name';name.textContent=state.sourceFileName||'Source media';
+    const canvas=document.createElement('canvas');clip.append(name,canvas);
+    requestAnimationFrame(()=>drawWaveformToCanvas(canvas,state.sourceBuffer,0,state.sourceBuffer?.duration||state.duration,'#38bdf8'));
+    clip.addEventListener('click',e=>{e.stopPropagation();const rect=clip.getBoundingClientRect();seekTimeline((e.clientX-rect.left)/state.pxPerSecond);});
+    lane.appendChild(clip);
+  }else{
+    const empty=document.createElement('div');empty.className='source-track-empty';empty.textContent='Load media to populate the Layer 1 reference waveform';lane.appendChild(empty);
+  }
+  row.append(label,lane);els.tracks.appendChild(row);
 }
 function miniButton(text, onClick) { const b=document.createElement('button');b.className='mini-btn';b.textContent=text;b.addEventListener('click',onClick);return b; }
 function renderClip(track, clip) {
