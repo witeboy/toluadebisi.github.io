@@ -8,8 +8,8 @@
   <title>Accompaniment Studio</title>
   <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
   <link rel="preconnect" href="https://huggingface.co" crossorigin>
-  <link rel="stylesheet" href="styles.css?v=20260901-3" />
-  <link rel="stylesheet" href="compact-v2.css?v=20260901-3" />
+  <link rel="stylesheet" href="styles.css?v=20260901-6" />
+  <link rel="stylesheet" href="compact-v2.css?v=20260901-6" />
 </head>
 <body>
   <div class="app-shell">
@@ -80,7 +80,7 @@
         <div class="timeline-head">
           <div>
             <h2>Timeline</h2>
-            <p>Click a clip to select it. Drag clips horizontally to reposition them. Use the edit controls above to split or trim.</p>
+            <p>Layer 1 is the locked source reference. Record on Layers 2+ and drag takes left or right until their waveform peaks line up with the source.</p>
           </div>
           <div class="zoom-control">
             <span>Zoom</span>
@@ -125,6 +125,6 @@
   <input id="trackImportInput" type="file" accept="audio/*" hidden />
 
   <script src="https://cdn.jsdelivr.net/npm/lamejs@1.2.1/lame.min.js"></script>
-  <script type="module" src="app-loader.js?v=20260901-5"></script>
+  <script type="module" src="app-loader.js?v=20260901-6"></script>
 </body>
 </html>
