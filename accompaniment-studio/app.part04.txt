@@ -1,0 +1,46 @@
+onst track of state.tracks){
+    if(track.muted||(anySolo&&!track.solo))continue;
+    for(const clip of track.clips){
+      const src=offline.createBufferSource();src.buffer=clip.buffer;const gain=offline.createGain();gain.gain.value=track.volume;src.connect(gain).connect(offline.destination);src.start(clip.start,clip.trimStart||0,clipDuration(clip));
+    }
+  }
+  if(includeSource && state.sourceBuffer){const src=offline.createBufferSource();src.buffer=state.sourceBuffer;const gain=offline.createGain();gain.gain.value=.9;src.connect(gain).connect(offline.destination);src.start(0,0,Math.min(state.sourceBuffer.duration,duration));}
+  return offline.startRendering();
+}
+function floatTo16(float){const out=new Int16Array(float.length);for(let i=0;i<float.length;i++){const s=Math.max(-1,Math.min(1,float[i]));out[i]=s<0?s*0x8000:s*0x7fff;}return out;}
+async function exportMp3(){
+  if(!window.lamejs){notify('MP3 encoder failed to load.');return;}els.exportMp3Btn.disabled=true;els.exportMp3Btn.textContent='Rendering…';
+  try{
+    const buffer=await renderMixBuffer({includeSource:els.includeSourceToggle.checked});const channels=Math.min(2,buffer.numberOfChannels);const enc=new lamejs.Mp3Encoder(channels,buffer.sampleRate,192);const left=floatTo16(buffer.getChannelData(0));const right=channels===2?floatTo16(buffer.getChannelData(1)):null;const chunks=[];const block=1152;
+    for(let i=0;i<left.length;i+=block){const b=channels===2?enc.encodeBuffer(left.subarray(i,i+block),right.subarray(i,i+block)):enc.encodeBuffer(left.subarray(i,i+block));if(b.length)chunks.push(new Int8Array(b));}
+    const tail=enc.flush();if(tail.length)chunks.push(new Int8Array(tail));downloadBlob(new Blob(chunks,{type:'audio/mpeg'}),`${baseName(state.sourceFileName)||'accompaniment'}-mix.mp3`);notify('MP3 exported.');
+  }catch(err){console.error(err);notify('MP3 export failed.');}finally{els.exportMp3Btn.disabled=false;els.exportMp3Btn.textContent='Export MP3';}
+}
+function baseName(n=''){return n.replace(/\.[^.]+$/,'').replace(/[^a-z0-9-_]+/gi,'-').replace(/^-|-$/g,'');}
+function downloadBlob(blob,name){const a=document.createElement('a');const url=URL.createObjectURL(blob);a.href=url;a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1500);}
+
+async function transcribeMix(){
+  els.transcribeBtn.disabled=true;els.transcribeBtn.textContent='Preparing…';
+  try{
+    const mix=await renderMixBuffer({includeSource:false,mono:true});const audio=resampleTo16kMono(mix);els.transcriptionStatus.textContent='Loading local Whisper model… first use downloads and caches the model.';
+    if(!state.transcriber){
+      const { pipeline, env } = await import('https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.2.0');
+      env.allowLocalModels=false;
+      let device='wasm'; if('gpu' in navigator){try{const a=await navigator.gpu.requestAdapter();if(a)device='webgpu';}catch{}}
+      try{state.transcriber=await pipeline('automatic-speech-recognition','onnx-community/whisper-tiny.en',{device,dtype:device==='webgpu'?'fp16':'q8'});}catch{state.transcriber=await pipeline('automatic-speech-recognition','Xenova/whisper-tiny.en');}
+    }
+    els.transcribeBtn.textContent='Transcribing…';els.transcriptionStatus.textContent='Transcribing locally in your browser…';
+    const out=await state.transcriber(audio,{return_timestamps:true,chunk_length_s:25,stride_length_s:5});
+    const chunks=out.chunks||[];state.transcriptSegments=chunks.map(ch=>({start:Number(ch.timestamp?.[0]??0),end:Number(ch.timestamp?.[1]??ch.timestamp?.[0]??0),text:String(ch.text||'').trim()})).filter(x=>x.text);
+    els.transcriptEditor.value=(out.text||state.transcriptSegments.map(x=>x.text).join(' ')).trim();
+    els.transcriptionStatus.textContent=`Done. ${state.transcriptSegments.length} timestamped caption segment${state.transcriptSegments.length===1?'':'s'} created.`;renderTranscript();updateButtons();notify('Transcription complete.');
+  }catch(err){console.error(err);els.transcriptionStatus.textContent='Transcription failed. Check your internet connection for the initial model download and try Chrome/Edge.';notify('Could not transcribe this recording.');}
+  finally{els.transcribeBtn.disabled=false;els.transcribeBtn.textContent='Transcribe';}
+}
+function resampleTo16kMono(buffer){
+  const input=buffer.getChannelData(0);if(buffer.sampleRate===16000)return new Float32Array(input);const ratio=buffer.sampleRate/16000;const len=Math.ceil(input.length/ratio);const out=new Float32Array(len);
+  for(let i=0;i<len;i++){const start=Math.floor(i*ratio),end=Math.min(input.length,Math.floor((i+1)*ratio));let sum=0;for(let j=start;j<end;j++)sum+=input[j];out[i]=sum/Math.max(1,end-start);}return out;
+}
+function updateCaptionOverlay(t){
+  if(!els.captionsToggle.checked||!state.transcriptSegments.length){els.captionOverlay.hidden=true;return;}
+  const seg=state.transcriptSegments.find(s=>t>=s.start&&t<=s.end);if(seg){els.captionOverlay.textContent=seg.text;els.
