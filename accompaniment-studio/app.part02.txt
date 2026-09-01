@@ -1,0 +1,69 @@
+if (state.tracks.length === 1) { notify('Keep at least one recording layer.'); return; }
+  state.tracks=state.tracks.filter(t=>t.id!==id); if(state.selectedTrackId===id){state.selectedTrackId=state.tracks[0]?.id||null;state.selectedClipId=null;} renderAll();
+}
+
+function renderMixer(){
+  els.mixerList.innerHTML='';
+  for(const track of state.tracks){
+    const row=document.createElement('div');row.className='mixer-strip';
+    const meta=document.createElement('div');meta.className='track-meta';meta.innerHTML=`<strong>${escapeHtml(track.name)}</strong><small>${track.clips.length} clip${track.clips.length===1?'':'s'}</small>`;
+    const vol=document.createElement('input');vol.type='range';vol.min='0';vol.max='1.5';vol.step='.01';vol.value=track.volume;vol.title='Volume';vol.addEventListener('input',()=>track.volume=Number(vol.value));
+    const mute=document.createElement('button');mute.className='mini-btn';mute.textContent=track.muted?'UNMUTE':'MUTE';mute.addEventListener('click',()=>{track.muted=!track.muted;renderMixer();});
+    const solo=document.createElement('button');solo.className='mini-btn';solo.textContent=track.solo?'S':'s';solo.title='Solo';solo.addEventListener('click',()=>{track.solo=!track.solo;renderMixer();});
+    row.append(meta,vol,mute,solo);els.mixerList.appendChild(row);
+  }
+}
+function escapeHtml(s=''){return s.replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));}
+
+function renderTranscript(){
+  els.captionList.innerHTML='';
+  for(const seg of state.transcriptSegments){
+    const row=document.createElement('div');row.className='caption-item';
+    row.innerHTML=`<div class="stamp">${formatTime(seg.start)}–${formatTime(seg.end)}</div><div>${escapeHtml(seg.text)}</div>`; els.captionList.appendChild(row);
+  }
+  if(!state.transcriptSegments.length) els.captionList.innerHTML='<div class="empty-list">Timestamped captions will appear here.</div>';
+}
+function updateButtons(){
+  const hasMedia=!!state.sourceObjectUrl; const hasClips=state.tracks.some(t=>t.clips.length); const hasSel=!!selectedClip();
+  els.recordBtn.disabled=!state.selectedTrackId||state.isRecording;
+  els.stopBtn.disabled=!state.isRecording;
+  els.splitBtn.disabled=!hasSel;els.trimStartBtn.disabled=!hasSel;els.trimEndBtn.disabled=!hasSel;els.deleteClipBtn.disabled=!hasSel;
+  els.transcribeBtn.disabled=!hasClips||state.isRecording;
+  els.exportMp3Btn.disabled=!hasClips;
+  els.exportTranscriptBtn.disabled=!els.transcriptEditor.value.trim(); els.exportCaptionsBtn.disabled=!state.transcriptSegments.length;
+  if(!hasMedia) els.playBtn.disabled=!hasClips;
+}
+
+function currentTimelineTime(){
+  if (state.audioCtx && state.playbackNodes.length) return state.playbackStartTimelineTime + (state.audioCtx.currentTime-state.playbackStartCtxTime);
+  return Number.isFinite(els.media.currentTime)?els.media.currentTime:0;
+}
+async function togglePlayback(){ if(state.playbackNodes.length || !els.media.paused) stopPlayback(); else await startPlayback(currentTimelineTime()); }
+async function startPlayback(from=0){
+  stopPlayback(false); const ctx=await ensureAudioContext(); from=clamp(from,0,projectEnd());
+  state.playbackStartTimelineTime=from;state.playbackStartCtxTime=ctx.currentTime;
+  scheduleRecordingTracks(ctx,from);
+  if(state.sourceObjectUrl && from < (state.duration||Infinity)) { els.media.currentTime=clamp(from,0,Math.max(0,state.duration-.01)); await els.media.play().catch(()=>{}); }
+  els.playBtn.textContent='❚❚'; animate();
+}
+function scheduleRecordingTracks(ctx,from){
+  const anySolo=state.tracks.some(t=>t.solo);
+  for(const track of state.tracks){
+    if(track.muted || (anySolo&&!track.solo))continue;
+    for(const clip of track.clips){
+      const dur=clipDuration(clip), clipEnd=clip.start+dur; if(clipEnd<=from)continue;
+      const localOffset=Math.max(0,from-clip.start); const when=Math.max(0,clip.start-from);
+      const src=ctx.createBufferSource();src.buffer=clip.buffer;const gain=ctx.createGain();gain.gain.value=track.volume;src.connect(gain).connect(ctx.destination);
+      const offset=(clip.trimStart||0)+localOffset; const playDur=Math.max(0,dur-localOffset); if(playDur>0){src.start(ctx.currentTime+when,offset,playDur);state.playbackNodes.push(src);}
+    }
+  }
+}
+function stopPlayback(resetIcon=true){
+  for(const n of state.playbackNodes){try{n.stop();}catch{}} state.playbackNodes=[];
+  if(!els.media.paused) els.media.pause(); cancelAnimationFrame(state.animationFrame);state.animationFrame=null;if(resetIcon)els.playBtn.textContent='▶';updatePlayhead();
+}
+function animate(){
+  const t=currentTimelineTime(); if(t>=projectEnd()){stopPlayback();seekTimeline(0);return;} updatePlayhead(t); updateCaptionOverlay(t); state.animationFrame=requestAnimationFrame(animate);
+}
+function seekTimeline(sec){
+  sec=clamp(sec,0,projectEnd());const wasPlaying=state.playbackNodes.length||!els.media.paused;stopPlayback();if(state.sourceObjectUrl && sec<=state.duration)els.media.currentTime=sec;updatePlayhead(sec);upd
