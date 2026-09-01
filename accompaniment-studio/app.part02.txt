@@ -13,7 +13,7 @@ function renderMixer(){
     row.append(meta,vol,mute,solo);els.mixerList.appendChild(row);
   }
 }
-function escapeHtml(s=''){return s.replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));}
+function escapeHtml(s=''){return s.replace(/[&<>'\"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','\"':'&quot;'}[c]));}
 
 function renderTranscript(){
   els.captionList.innerHTML='';
@@ -31,20 +31,30 @@ function updateButtons(){
   els.transcribeBtn.disabled=!hasClips||state.isRecording;
   els.exportMp3Btn.disabled=!hasClips;
   els.exportTranscriptBtn.disabled=!els.transcriptEditor.value.trim(); els.exportCaptionsBtn.disabled=!state.transcriptSegments.length;
-  if(!hasMedia) els.playBtn.disabled=!hasClips;
+  els.playBtn.disabled=!hasMedia&&!hasClips;
 }
 
 function currentTimelineTime(){
-  if (state.audioCtx && state.playbackNodes.length) return state.playbackStartTimelineTime + (state.audioCtx.currentTime-state.playbackStartCtxTime);
+  if(state.isPlaying){
+    if(state.sourceObjectUrl&&!els.media.paused&&Number.isFinite(els.media.currentTime)) return els.media.currentTime;
+    if(state.audioCtx) return state.playbackStartTimelineTime+(state.audioCtx.currentTime-state.playbackStartCtxTime);
+  }
   return Number.isFinite(els.media.currentTime)?els.media.currentTime:0;
 }
-async function togglePlayback(){ if(state.playbackNodes.length || !els.media.paused) stopPlayback(); else await startPlayback(currentTimelineTime()); }
-async function startPlayback(from=0){
-  stopPlayback(false); const ctx=await ensureAudioContext(); from=clamp(from,0,projectEnd());
-  state.playbackStartTimelineTime=from;state.playbackStartCtxTime=ctx.currentTime;
+async function togglePlayback(){
+  if(state.isPlaying||(!els.media.paused&&state.sourceObjectUrl)){stopPlayback();return;}
+  await startPlayback(currentTimelineTime());
+}
+async function startPlayback(from=0,{playMedia=true}={}){
+  stopPlayback(false,playMedia);const ctx=await ensureAudioContext();from=clamp(from,0,projectEnd());
+  state.playbackStartTimelineTime=from;state.playbackStartCtxTime=ctx.currentTime;state.isPlaying=true;
   scheduleRecordingTracks(ctx,from);
-  if(state.sourceObjectUrl && from < (state.duration||Infinity)) { els.media.currentTime=clamp(from,0,Math.max(0,state.duration-.01)); await els.media.play().catch(()=>{}); }
-  els.playBtn.textContent='❚❚'; animate();
+  if(state.sourceObjectUrl&&from<(state.duration||Infinity)&&playMedia){
+    els.media.currentTime=clamp(from,0,Math.max(0,state.duration-.01));
+    try{await els.media.play();}
+    catch(err){console.error('Media play failed',err);state.isPlaying=false;stopPlayback();notify('The media could not start. Click Play again or try Chrome/Edge.');throw err;}
+  }
+  els.playBtn.textContent='❚❚';animate();
 }
 function scheduleRecordingTracks(ctx,from){
   const anySolo=state.tracks.some(t=>t.solo);
@@ -58,12 +68,19 @@ function scheduleRecordingTracks(ctx,from){
     }
   }
 }
-function stopPlayback(resetIcon=true){
-  for(const n of state.playbackNodes){try{n.stop();}catch{}} state.playbackNodes=[];
-  if(!els.media.paused) els.media.pause(); cancelAnimationFrame(state.animationFrame);state.animationFrame=null;if(resetIcon)els.playBtn.textContent='▶';updatePlayhead();
+function stopPlayback(resetIcon=true,pauseMedia=true){
+  state.isPlaying=false;
+  for(const n of state.playbackNodes){try{n.stop();}catch{}}state.playbackNodes=[];
+  if(pauseMedia&&!els.media.paused)els.media.pause();
+  cancelAnimationFrame(state.animationFrame);state.animationFrame=null;if(resetIcon)els.playBtn.textContent='▶';updatePlayhead();
 }
 function animate(){
-  const t=currentTimelineTime(); if(t>=projectEnd()){stopPlayback();seekTimeline(0);return;} updatePlayhead(t); updateCaptionOverlay(t); state.animationFrame=requestAnimationFrame(animate);
+  if(!state.isPlaying)return;
+  const t=currentTimelineTime();
+  if(t>=projectEnd()){if(state.isRecording){stopRecording();return;}stopPlayback();seekTimeline(0);return;}
+  updatePlayhead(t);updateCaptionOverlay(t);state.animationFrame=requestAnimationFrame(animate);
 }
 function seekTimeline(sec){
-  sec=clamp(sec,0,projectEnd());const wasPlaying=state.playbackNodes.length||!els.media.paused;stopPlayback();if(state.sourceObjectUrl && sec<=state.duration)els.media.currentTime=sec;updatePlayhead(sec);upd
+  if(state.isRecording){notify('Stop recording before moving the playhead.');return;}
+  sec=clamp(sec,0,projectEnd());const wasPlaying=state.isPlaying||(!els.media.paused&&state.sourceObjectUrl);stopPlayback();if(state.sourceObjectUrl&&sec<=state.duration)els.media.currentTime=sec;updatePlayhead(sec);updateCaptionOverlay(sec);if(wasPlaying)startPlayback(sec).catch(()=>{});
+}
