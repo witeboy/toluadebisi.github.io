@@ -1,7 +1,10 @@
 (async () => {
+  const version = '20260901-4';
   const parts = ['app.part00.txt', 'app.part01.txt', 'app.part02.txt', 'app.part03.txt', 'app.part04.txt', 'app.part05.txt'];
   const code = (await Promise.all(parts.map(async (name) => {
-    const response = await fetch(new URL(name, import.meta.url));
+    const url = new URL(name, import.meta.url);
+    url.searchParams.set('v', version);
+    const response = await fetch(url, { cache: 'no-store' });
     if (!response.ok) throw new Error(`Failed to load ${name}: ${response.status}`);
     return response.text();
   }))).join('');
