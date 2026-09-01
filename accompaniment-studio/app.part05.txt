@@ -4,6 +4,39 @@ function exportTranscript(){const txt=els.transcriptEditor.value.trim();if(!txt)
 function toSrtTime(sec){const ms=Math.max(0,Math.round(sec*1000)),h=Math.floor(ms/3600000),m=Math.floor(ms%3600000/60000),s=Math.floor(ms%60000/1000),r=ms%1000;return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')},${String(r).padStart(3,'0')}`;}
 function exportCaptions(){const srt=state.transcriptSegments.map((s,i)=>`${i+1}\n${toSrtTime(s.start)} --> ${toSrtTime(s.end)}\n${s.text}\n`).join('\n');downloadBlob(new Blob([srt],{type:'application/x-subrip'}),`${baseName(state.sourceFileName)||'recording'}-captions.srt`);}
 
+/* Runtime v4 transport overrides. These definitions intentionally replace the earlier fragment versions. */
+function escapeHtml(s=''){return String(s).replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));}
+async function beginRecording(){
+  if(state.isRecording)return;
+  const track=selectedTrack()||createTrack();
+  if(!navigator.mediaDevices?.getUserMedia||typeof MediaRecorder==='undefined'){notify('Microphone recording is not supported in this browser.');return;}
+  await ensureAudioContext();
+  let stream=null;
+  try{
+    const wasPlaying=!!state.isPlaying;
+    stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false}});
+    const start=currentTimelineTime();
+    const preferred=['audio/webm;codecs=opus','audio/ogg;codecs=opus','audio/webm'].find(type=>MediaRecorder.isTypeSupported(type));
+    state.recorderStream=stream;state.recordChunks=[];state.discardRecording=false;
+    state.recorder=new MediaRecorder(stream,preferred?{mimeType:preferred}:undefined);
+    state.recorder.ondataavailable=e=>{if(e.data&&e.data.size)state.recordChunks.push(e.data);};
+    state.recorder.onstop=()=>{const discard=state.discardRecording;state.discardRecording=false;if(!discard)finalizeRecording(track);};
+    if(els.metronomeToggle.checked){if(state.isPlaying)stopPlayback();await countIn();}
+    state.recordStartTime=start;state.isRecording=true;els.recordBtn.textContent='● Recording…';updateButtons();
+    state.recorder.start(100);
+    if(!state.isPlaying)await startPlayback(start);
+    else if(!wasPlaying)await startPlayback(start);
+    notify('Recording started — source media and microphone are running together.');
+  }catch(err){
+    console.error(err);state.discardRecording=true;state.isRecording=false;
+    try{if(state.recorder&&state.recorder.state!=='inactive')state.recorder.stop();}catch{}
+    (stream||state.recorderStream)?.getTracks?.().forEach(t=>t.stop());state.recorderStream=null;
+    els.recordBtn.textContent='● Record';updateButtons();
+    if(err?.name==='NotAllowedError'||err?.name==='SecurityError')notify('Allow microphone access, then press Record again.');
+    else notify('Recording could not start. Try Chrome or Edge and make sure the media can play.');
+  }
+}
+
 state.isPlaying=false;
 state.discardRecording=false;
 
@@ -28,6 +61,12 @@ els.media.addEventListener('pause',()=>{
   if(!state.isPlaying)return;
   if(state.isRecording){stopRecording();return;}
   stopPlayback(true,false);
+});
+els.media.addEventListener('seeking',()=>{if(state.isRecording)stopRecording();});
+els.media.addEventListener('seeked',()=>{
+  if(state.isRecording)return;
+  if(state.isPlaying&&!els.media.paused)startPlayback(els.media.currentTime,{playMedia:false}).catch(err=>console.error(err));
+  else{updatePlayhead(els.media.currentTime);updateCaptionOverlay(els.media.currentTime);}
 });
 els.media.addEventListener('ended',()=>{
   if(state.isRecording){stopRecording();return;}
