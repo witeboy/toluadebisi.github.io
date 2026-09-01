@@ -48,10 +48,17 @@ els.rewindBtn.addEventListener('click',()=>seekTimeline(currentTimelineTime()-5)
 els.recordBtn.addEventListener('click',beginRecording);els.stopBtn.addEventListener('click',stopRecording);
 els.splitBtn.addEventListener('click',splitSelected);els.trimStartBtn.addEventListener('click',trimStart);els.trimEndBtn.addEventListener('click',trimEnd);els.deleteClipBtn.addEventListener('click',deleteSelectedClip);
 els.exportMp3Btn.addEventListener('click',exportMp3);els.transcribeBtn.addEventListener('click',transcribeMix);els.exportTranscriptBtn.addEventListener('click',exportTranscript);els.exportCaptionsBtn.addEventListener('click',exportCaptions);
-els.zoomSlider.addEventListener('input',()=>{state.pxPerSecond=Number(els.zoomSlider.value);renderTimeline();});
+els.zoomSlider.addEventListener('input',()=>{
+  const focusTime=currentTimelineTime();
+  state.zoomLevel=clamp(Number(els.zoomSlider.value)||0,0,100);
+  refreshTimelineScale();
+  renderTimeline();
+  const viewport=timelineViewportWidth();
+  els.timelineScroller.scrollLeft=Math.max(0,focusTime*state.pxPerSecond-viewport/2);
+});
 els.transcriptEditor.addEventListener('input',updateButtons);els.captionsToggle.addEventListener('change',()=>updateCaptionOverlay(currentTimelineTime()));
 els.trackImportInput.addEventListener('change',e=>{importAudioToTrack(e.target.files?.[0],state.importTargetTrackId);e.target.value='';});
-els.timelineScroller.addEventListener('click',e=>{if(e.target.closest('.clip,.track-label'))return;const rect=els.timelineScroller.getBoundingClientRect();const x=e.clientX-rect.left+els.timelineScroller.scrollLeft-parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--label-w'));if(x>=0)seekTimeline(x/state.pxPerSecond);});
+els.timelineScroller.addEventListener('click',e=>{if(e.target.closest('.clip,.track-label'))return;const rect=els.timelineScroller.getBoundingClientRect();const x=e.clientX-rect.left+els.timelineScroller.scrollLeft-timelineLabelWidth();if(x>=0)seekTimeline(x/state.pxPerSecond);});
 els.media.addEventListener('timeupdate',()=>{if(!state.isPlaying)updatePlayhead(els.media.currentTime);updateCaptionOverlay(els.media.currentTime);});
 els.media.addEventListener('play',()=>{
   if(state.isPlaying)return;
@@ -73,7 +80,13 @@ els.media.addEventListener('ended',()=>{
   stopPlayback(true,false);updatePlayhead(state.duration||els.media.currentTime);
 });
 els.media.addEventListener('error',()=>{const detail=els.media.error?.message||'This media format may not be supported by the browser.';console.error('Media element error',els.media.error);notify(`Media playback error: ${detail}`);});
-window.addEventListener('resize',()=>{drawSourceWaveform();renderTimeline();});
+window.addEventListener('resize',()=>{
+  const focusTime=currentTimelineTime();
+  drawSourceWaveform();
+  refreshTimelineScale();
+  renderTimeline();
+  if(state.zoomLevel>0){const viewport=timelineViewportWidth();els.timelineScroller.scrollLeft=Math.max(0,focusTime*state.pxPerSecond-viewport/2);}else els.timelineScroller.scrollLeft=0;
+});
 window.addEventListener('keydown',e=>{if(e.target.matches('input,textarea'))return;if(e.code==='Space'){e.preventDefault();togglePlayback().catch(err=>console.error(err));}if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='k'){e.preventDefault();splitSelected();}});
 
 resetProject();
