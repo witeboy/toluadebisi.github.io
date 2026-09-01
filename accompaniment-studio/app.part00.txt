@@ -70,7 +70,7 @@ function selectedClip() {
 function selectedTrack() { return state.tracks.find(t => t.id === state.selectedTrackId) || null; }
 
 function createTrack(name) {
-  const track = { id: uid('track'), name: name || `Layer ${state.tracks.length + 1}`, volume: 1, muted: false, solo: false, clips: [] };
+  const track = { id: uid('track'), name: name || `Layer ${state.tracks.length + 2}`, volume: 1, muted: false, solo: false, clips: [] };
   state.tracks.push(track);
   state.selectedTrackId = track.id;
   renderAll();
@@ -86,7 +86,7 @@ function resetProject() {
   els.media.removeAttribute('src'); els.media.load(); els.media.style.display = 'none'; els.emptyMedia.style.display = 'flex';
   els.transcriptEditor.value = ''; els.captionOverlay.hidden = true;
   renderAll(); drawSourceWaveform();
-  createTrack('Layer 1');
+  createTrack('Layer 2');
 }
 
 async function loadMedia(file) {
@@ -105,7 +105,7 @@ async function loadMedia(file) {
   state.duration = Number.isFinite(els.media.duration) ? els.media.duration : (state.sourceBuffer?.duration || 0);
   els.media.currentTime = 0;
   drawSourceWaveform(); renderTimeline(); updateButtons();
-  notify(`Loaded ${file.name}`);
+  notify(`Loaded ${file.name} as Layer 1 source`);
 }
 
 function drawWaveformT
