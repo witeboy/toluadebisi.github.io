@@ -18,7 +18,8 @@ const state = {
   sourceObjectUrl: null,
   sourceFileName: '',
   duration: 0,
-  pxPerSecond: 90,
+  zoomLevel: 0,
+  pxPerSecond: 1,
   tracks: [],
   selectedTrackId: null,
   selectedClipId: null,
@@ -55,9 +56,38 @@ async function ensureAudioContext() {
   return state.audioCtx;
 }
 
+function timelineLabelWidth() {
+  const value = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--label-w'));
+  return Number.isFinite(value) ? value : 150;
+}
+function timelineViewportWidth() {
+  const width = els.timelineScroller?.clientWidth || 900;
+  return Math.max(240, width - timelineLabelWidth() - 2);
+}
 function projectEnd() {
   const clipEnd = state.tracks.flatMap(t => t.clips).reduce((m,c) => Math.max(m, c.start + clipDuration(c)), 0);
   return Math.max(state.duration || 0, clipEnd, 5);
+}
+function fitPixelsPerSecond() {
+  const duration = state.duration > 0 ? state.duration : projectEnd();
+  return timelineViewportWidth() / Math.max(duration, 0.1);
+}
+function zoomPixelsPerSecond(level = state.zoomLevel) {
+  const fit = Math.max(0.01, fitPixelsPerSecond());
+  const zoom = clamp(Number(level) || 0, 0, 100);
+  const maxPps = Math.max(fit, Math.min(2400, Math.max(320, fit * 24)));
+  if (zoom <= 0 || maxPps <= fit) return fit;
+  return fit * Math.pow(maxPps / fit, zoom / 100);
+}
+function refreshTimelineScale() {
+  state.zoomLevel = clamp(Number(state.zoomLevel) || 0, 0, 100);
+  state.pxPerSecond = zoomPixelsPerSecond(state.zoomLevel);
+  return state.pxPerSecond;
+}
+function rulerIntervalSeconds() {
+  const targetSeconds = Math.max(1, 86 / Math.max(state.pxPerSecond, 0.01));
+  const intervals = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600];
+  return intervals.find(value => value >= targetSeconds) || 7200;
 }
 function clipDuration(c) { return Math.max(0, (c.trimEnd ?? c.buffer.duration) - (c.trimStart ?? 0)); }
 function selectedClip() {
@@ -81,6 +111,7 @@ function resetProject() {
   stopPlayback();
   if (state.sourceObjectUrl) URL.revokeObjectURL(state.sourceObjectUrl);
   state.sourceObjectUrl = null; state.sourceBuffer = null; state.sourceFileName = ''; state.duration = 0;
+  state.zoomLevel = 0; state.pxPerSecond = 1; if (els.zoomSlider) els.zoomSlider.value = '0';
   state.tracks = []; state.selectedClipId = null; state.selectedTrackId = null;
   state.transcriptSegments = []; state.transcriber = null;
   const initialTrack={id:uid('track'),name:'Layer 2',volume:1,muted:false,solo:false,clips:[]};
@@ -104,9 +135,11 @@ async function loadMedia(file) {
   els.media.style.display = 'block'; els.emptyMedia.style.display = 'none';
   await new Promise(resolve => { els.media.onloadedmetadata = () => resolve(); els.media.onerror = () => resolve(); });
   state.duration = Number.isFinite(els.media.duration) ? els.media.duration : (state.sourceBuffer?.duration || 0);
+  state.zoomLevel = 0; if (els.zoomSlider) els.zoomSlider.value = '0'; refreshTimelineScale();
   els.media.currentTime = 0;
+  els.timelineScroller.scrollLeft = 0;
   drawSourceWaveform(); renderTimeline(); updateButtons();
-  notify(`Loaded ${file.name} as Layer 1 source`);
+  notify(`Loaded ${file.name} as Layer 1 source — zoom 0 fits the full media`);
 }
 
 function drawWaveformT
