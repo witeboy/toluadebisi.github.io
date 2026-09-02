@@ -1,5 +1,6 @@
-const OPENAI_TRANSLATIONS_URL = 'https://api.openai.com/v1/audio/translations';
-const MAX_REQUEST_BYTES = 23 * 1024 * 1024;
+const CF_API_BASE = 'https://api.cloudflare.com/client/v4/accounts';
+const CF_WHISPER_MODEL = '@cf/openai/whisper-large-v3-turbo';
+const MAX_REQUEST_BYTES = 16 * 1024 * 1024;
 const ALLOWED_ORIGINS = new Set([
   'https://witeboy.github.io',
   'http://localhost:8000',
@@ -11,7 +12,7 @@ const ALLOWED_ORIGINS = new Set([
 function corsHeaders(origin = '') {
   const headers = new Headers({
     'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Headers': 'Content-Type, X-CF-Account-ID, X-CF-AI-Token',
     'Access-Control-Max-Age': '86400',
     'Cache-Control': 'no-store',
     'Vary': 'Origin',
@@ -34,6 +35,29 @@ function clientKey(request) {
   return request.headers.get('cf-connecting-ip') || 'unknown';
 }
 
+function readCredentials(request) {
+  const accountId = String(request.headers.get('X-CF-Account-ID') || '').trim();
+  const token = String(request.headers.get('X-CF-AI-Token') || '').trim();
+  if (!/^[a-f0-9]{32}$/i.test(accountId)) return { error: 'Enter a valid 32-character Cloudflare Account ID.' };
+  if (token.length < 20) return { error: 'Enter a valid Workers AI API token.' };
+  return { accountId, token };
+}
+
+function cloudflareError(data, fallback) {
+  return data?.errors?.[0]?.message || data?.error?.message || data?.message || fallback;
+}
+
+async function cloudflareFetch(accountId, token, path, options = {}) {
+  const url = `${CF_API_BASE}/${encodeURIComponent(accountId)}${path}`;
+  return fetch(url, {
+    ...options,
+    headers: {
+      ...(options.headers || {}),
+      Authorization: `Bearer ${token}`,
+    },
+  });
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -47,87 +71,90 @@ export default {
     if (!allowedOrigin(origin)) return json({ error: 'Origin not allowed.' }, 403, origin);
 
     if (request.method === 'GET' && url.pathname === '/health') {
-      return json({ ok: true, service: 'accompaniment-studio-stt', model: 'whisper-1' }, 200, origin);
+      return json({ ok: true, service: 'accompaniment-studio-stt-relay', provider: 'Cloudflare Workers AI', model: CF_WHISPER_MODEL }, 200, origin);
     }
 
-    if (request.method !== 'POST' || url.pathname !== '/translate') {
+    if (!['/test', '/translate'].includes(url.pathname) || request.method !== 'POST') {
       return json({ error: 'Not found.' }, 404, origin);
-    }
-
-    if (!env.OPENAI_API_KEY) {
-      return json({ error: 'OPENAI_API_KEY is not configured on this Worker.' }, 503, origin);
     }
 
     if (env.TRANSLATION_RATE_LIMITER) {
       const { success } = await env.TRANSLATION_RATE_LIMITER.limit({ key: clientKey(request) });
-      if (!success) return json({ error: 'Too many translation requests. Try again in a minute.' }, 429, origin);
+      if (!success) return json({ error: 'Too many AI requests. Try again in a minute.' }, 429, origin);
+    }
+
+    const credentials = readCredentials(request);
+    if (credentials.error) return json({ error: credentials.error }, 400, origin);
+    const { accountId, token } = credentials;
+
+    if (url.pathname === '/test') {
+      try {
+        const response = await cloudflareFetch(
+          accountId,
+          token,
+          `/ai/models/search?search=${encodeURIComponent('whisper-large-v3-turbo')}&per_page=10`,
+          { method: 'GET' },
+        );
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || data.success === false) {
+          return json({ error: cloudflareError(data, `Cloudflare returned HTTP ${response.status}.`) }, response.status || 502, origin);
+        }
+        return json({ ok: true, model: CF_WHISPER_MODEL }, 200, origin);
+      } catch (error) {
+        console.error('Workers AI credential test failed');
+        return json({ error: 'Could not reach Cloudflare Workers AI from the relay.' }, 502, origin);
+      }
     }
 
     const contentType = request.headers.get('Content-Type') || '';
-    if (!contentType.toLowerCase().startsWith('multipart/form-data')) {
-      return json({ error: 'Expected multipart/form-data.' }, 415, origin);
+    if (!contentType.toLowerCase().includes('application/json')) {
+      return json({ error: 'Expected application/json.' }, 415, origin);
     }
 
     const contentLength = Number(request.headers.get('Content-Length') || 0);
     if (contentLength && contentLength > MAX_REQUEST_BYTES) {
-      return json({ error: 'Audio chunk is too large. Keep each request under 23 MiB.' }, 413, origin);
+      return json({ error: 'Audio chunk is too large. Reduce the chunk duration and try again.' }, 413, origin);
     }
 
-    const offset = Math.max(0, Number(url.searchParams.get('offset') || 0));
-
-    let upstream;
+    let body;
     try {
-      upstream = await fetch(OPENAI_TRANSLATIONS_URL, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${env.OPENAI_API_KEY}`,
-          'Content-Type': contentType,
-        },
-        body: request.body,
-      });
-    } catch (error) {
-      console.error('OpenAI request failed', error);
-      return json({ error: 'Could not reach the OpenAI translation service.' }, 502, origin);
-    }
-
-    const raw = await upstream.text();
-    if (!upstream.ok) {
-      let details = raw;
-      try {
-        const parsed = JSON.parse(raw);
-        details = parsed?.error?.message || parsed?.message || raw;
-      } catch {}
-      console.error('OpenAI translation error', upstream.status, details);
-      return json({ error: details || `OpenAI returned ${upstream.status}.` }, upstream.status, origin);
-    }
-
-    let data;
-    try {
-      data = JSON.parse(raw);
+      body = await request.json();
     } catch {
-      return json({ error: 'OpenAI returned an unreadable translation response.' }, 502, origin);
+      return json({ error: 'Invalid JSON request.' }, 400, origin);
     }
 
-    const segments = Array.isArray(data.segments)
-      ? data.segments
-          .map((segment) => ({
-            start: offset + Math.max(0, Number(segment.start || 0)),
-            end: offset + Math.max(0, Number(segment.end ?? segment.start ?? 0)),
-            text: String(segment.text || '').trim(),
-          }))
-          .filter((segment) => segment.text)
-      : [];
+    if (!body?.audio || typeof body.audio !== 'string') {
+      return json({ error: 'Audio payload is missing.' }, 400, origin);
+    }
 
-    return json(
-      {
-        text: String(data.text || '').trim(),
-        language: data.language || 'english',
-        duration: Number(data.duration || 0),
-        offset,
-        segments,
-      },
-      200,
-      origin,
-    );
+    const upstreamBody = {
+      audio: body.audio,
+      task: 'translate',
+      language: 'yo',
+      vad_filter: body.vad_filter !== false,
+      condition_on_previous_text: body.condition_on_previous_text === true,
+      initial_prompt: String(body.initial_prompt || 'Yoruba conversational speech. Translate faithfully into clear natural English. Preserve personal names, place names, kinship terms, and culturally specific Yoruba words when a direct English replacement would lose meaning.').slice(0, 1200),
+    };
+
+    try {
+      const response = await cloudflareFetch(
+        accountId,
+        token,
+        `/ai/run/${CF_WHISPER_MODEL}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(upstreamBody),
+        },
+      );
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.success === false) {
+        return json({ error: cloudflareError(data, `Cloudflare returned HTTP ${response.status}.`) }, response.status || 502, origin);
+      }
+      return json(data, 200, origin);
+    } catch (error) {
+      console.error('Workers AI translation relay failed');
+      return json({ error: 'Could not reach Cloudflare Workers AI from the relay.' }, 502, origin);
+    }
   },
 };
