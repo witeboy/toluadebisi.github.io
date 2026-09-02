@@ -1,0 +1,42 @@
+name: Deploy Accompaniment STT Worker
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'accompaniment-studio/worker/**'
+      - '.github/workflows/accompaniment-worker.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: accompaniment-stt-worker
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Deploy Worker and bind OpenAI key
+        id: deploy
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: accompaniment-studio/worker
+          wranglerVersion: '4.36.0'
+          command: deploy
+          secrets: |
+            OPENAI_API_KEY
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+
+      - name: Record deployment URL
+        if: success()
+        run: echo "Worker deployed at ${{ steps.deploy.outputs.deployment-url }}" >> "$GITHUB_STEP_SUMMARY"
