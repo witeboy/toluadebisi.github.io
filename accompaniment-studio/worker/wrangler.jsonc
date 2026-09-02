@@ -16,8 +16,5 @@
         "period": 60
       }
     }
-  ],
-  "limits": {
-    "subrequests": 10
-  }
+  ]
 }
