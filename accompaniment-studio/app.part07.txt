@@ -1,0 +1,151 @@
+
+/* Runtime v9: BYOK Cloudflare Workers AI + OpenAI Whisper Large V3 Turbo. */
+const CF_WHISPER_MODEL='@cf/openai/whisper-large-v3-turbo';
+const CF_API_BASE='https://api.cloudflare.com/client/v4/accounts';
+const CF_ACCOUNT_SESSION_KEY='accompaniment-cf-account-id';
+const CF_TOKEN_SESSION_KEY='accompaniment-cf-ai-token';
+const CF_ACCOUNT_LOCAL_KEY='accompaniment-cf-account-id-remembered';
+const CF_TOKEN_LOCAL_KEY='accompaniment-cf-ai-token-remembered';
+const CF_REMEMBER_KEY='accompaniment-cf-remember';
+
+els.aiSettingsBtn=$('aiSettingsBtn');
+els.aiSettingsBackdrop=$('aiSettingsBackdrop');
+els.closeAiSettingsBtn=$('closeAiSettingsBtn');
+els.cfAccountIdInput=$('cfAccountIdInput');
+els.cfApiTokenInput=$('cfApiTokenInput');
+els.toggleCfTokenBtn=$('toggleCfTokenBtn');
+els.rememberCfCredentials=$('rememberCfCredentials');
+els.saveCfCredentialsBtn=$('saveCfCredentialsBtn');
+els.testCfCredentialsBtn=$('testCfCredentialsBtn');
+els.clearCfCredentialsBtn=$('clearCfCredentialsBtn');
+els.cfCredentialState=$('cfCredentialState');
+els.cfSettingsTestState=$('cfSettingsTestState');
+
+function normalizeCfAccountId(value=''){return String(value).trim();}
+function normalizeCfToken(value=''){return String(value).trim();}
+function readCloudflareCredentials(){
+  const remembered=localStorage.getItem(CF_REMEMBER_KEY)==='1';
+  const accountId=normalizeCfAccountId(sessionStorage.getItem(CF_ACCOUNT_SESSION_KEY)||(remembered?localStorage.getItem(CF_ACCOUNT_LOCAL_KEY):'')||'');
+  const token=normalizeCfToken(sessionStorage.getItem(CF_TOKEN_SESSION_KEY)||(remembered?localStorage.getItem(CF_TOKEN_LOCAL_KEY):'')||'');
+  return {accountId,token,remembered};
+}
+function validateCloudflareCredentials(accountId,token){
+  if(!accountId)return 'Enter your Cloudflare Account ID.';
+  if(!/^[a-f0-9]{32}$/i.test(accountId))return 'Cloudflare Account ID should be a 32-character hexadecimal value.';
+  if(!token)return 'Enter a Workers AI API token.';
+  if(token.length<20)return 'The API token looks too short.';
+  return '';
+}
+function writeCloudflareCredentials(accountId,token,remember){
+  accountId=normalizeCfAccountId(accountId);token=normalizeCfToken(token);
+  sessionStorage.setItem(CF_ACCOUNT_SESSION_KEY,accountId);sessionStorage.setItem(CF_TOKEN_SESSION_KEY,token);
+  if(remember){localStorage.setItem(CF_ACCOUNT_LOCAL_KEY,accountId);localStorage.setItem(CF_TOKEN_LOCAL_KEY,token);localStorage.setItem(CF_REMEMBER_KEY,'1');}
+  else{localStorage.removeItem(CF_ACCOUNT_LOCAL_KEY);localStorage.removeItem(CF_TOKEN_LOCAL_KEY);localStorage.removeItem(CF_REMEMBER_KEY);}
+  refreshCredentialState();
+}
+function clearCloudflareCredentials(){
+  [CF_ACCOUNT_SESSION_KEY,CF_TOKEN_SESSION_KEY].forEach(k=>sessionStorage.removeItem(k));
+  [CF_ACCOUNT_LOCAL_KEY,CF_TOKEN_LOCAL_KEY,CF_REMEMBER_KEY].forEach(k=>localStorage.removeItem(k));
+  if(els.cfAccountIdInput)els.cfAccountIdInput.value='';if(els.cfApiTokenInput)els.cfApiTokenInput.value='';if(els.rememberCfCredentials)els.rememberCfCredentials.checked=false;
+  refreshCredentialState();setSettingsTestState('Credentials cleared.');
+}
+function setSettingsTestState(text,kind=''){if(!els.cfSettingsTestState)return;els.cfSettingsTestState.textContent=text;els.cfSettingsTestState.className=`settings-test-state ${kind}`.trim();}
+function refreshCredentialState(){
+  if(!els.cfCredentialState)return;
+  const {accountId,token,remembered}=readCloudflareCredentials();
+  if(accountId&&token){els.cfCredentialState.textContent=`● BYOK ready · ${CF_WHISPER_MODEL}${remembered?' · remembered on this device':' · session only'}`;els.cfCredentialState.className='ai-credential-state ok';}
+  else{els.cfCredentialState.textContent='○ AI credentials not configured · open Settings';els.cfCredentialState.className='ai-credential-state bad';}
+}
+function openAiSettings(){
+  const creds=readCloudflareCredentials();
+  if(els.cfAccountIdInput)els.cfAccountIdInput.value=creds.accountId;if(els.cfApiTokenInput)els.cfApiTokenInput.value=creds.token;if(els.rememberCfCredentials)els.rememberCfCredentials.checked=creds.remembered;
+  if(els.cfApiTokenInput)els.cfApiTokenInput.type='password';if(els.toggleCfTokenBtn)els.toggleCfTokenBtn.textContent='Show';setSettingsTestState('');
+  if(els.aiSettingsBackdrop){els.aiSettingsBackdrop.hidden=false;requestAnimationFrame(()=>els.cfAccountIdInput?.focus());}
+}
+function closeAiSettings(){if(els.aiSettingsBackdrop)els.aiSettingsBackdrop.hidden=true;}
+function credentialsFromSettings(){return {accountId:normalizeCfAccountId(els.cfAccountIdInput?.value||''),token:normalizeCfToken(els.cfApiTokenInput?.value||''),remember:!!els.rememberCfCredentials?.checked};}
+
+async function cloudflareApiFetch(url,options={}){
+  try{return await fetch(url,{...options,mode:'cors',cache:'no-store'});}
+  catch(error){const wrapped=new Error('The browser could not reach the Cloudflare API. Check your connection and browser privacy settings, then try again.');wrapped.cause=error;throw wrapped;}
+}
+async function testCloudflareCredentials(accountId,token){
+  accountId=normalizeCfAccountId(accountId);token=normalizeCfToken(token);
+  const invalid=validateCloudflareCredentials(accountId,token);if(invalid)throw new Error(invalid);
+  const url=`${CF_API_BASE}/${encodeURIComponent(accountId)}/ai/models/search?search=${encodeURIComponent('whisper-large-v3-turbo')}&per_page=10`;
+  const response=await cloudflareApiFetch(url,{headers:{Authorization:`Bearer ${token}`}});
+  const data=await response.json().catch(()=>({}));
+  if(!response.ok||data.success===false){const detail=data?.errors?.[0]?.message||data?.messages?.[0]||`Cloudflare returned HTTP ${response.status}`;throw new Error(detail);}
+  const models=Array.isArray(data.result)?data.result:(Array.isArray(data?.result?.data)?data.result.data:[]);
+  const found=!models.length||models.some(model=>String(model?.name||model?.id||'').includes('whisper-large-v3-turbo'));
+  if(!found)throw new Error('Credentials work, but Whisper Large V3 Turbo was not returned for this account.');
+  return true;
+}
+
+function blobToBase64(blob){return new Promise((resolve,reject)=>{const reader=new FileReader();reader.onerror=()=>reject(reader.error||new Error('Could not encode audio chunk.'));reader.onload=()=>{const value=String(reader.result||'');resolve(value.includes(',')?value.slice(value.indexOf(',')+1):value);};reader.readAsDataURL(blob);});}
+function parseVttTimestamp(value=''){
+  const parts=String(value).trim().split(':').map(Number);if(parts.some(Number.isNaN))return 0;
+  if(parts.length===3)return parts[0]*3600+parts[1]*60+parts[2];if(parts.length===2)return parts[0]*60+parts[1];return Number(parts[0]||0);
+}
+function segmentsFromVtt(vtt='',offset=0){
+  const blocks=String(vtt).replace(/\r/g,'').split(/\n\n+/);const output=[];
+  for(const block of blocks){const lines=block.split('\n').map(s=>s.trim()).filter(Boolean);const timingIndex=lines.findIndex(line=>line.includes('-->'));if(timingIndex<0)continue;const [a,b]=lines[timingIndex].split('-->').map(s=>s.trim().split(/\s+/)[0]);const text=lines.slice(timingIndex+1).join(' ').trim();if(text)output.push({start:offset+parseVttTimestamp(a),end:offset+parseVttTimestamp(b),text});}
+  return output;
+}
+function normalizeCloudflareWhisperResult(payload,offset,start,end){
+  const result=payload?.result??payload??{};
+  const info=result?.transcription_info||{};
+  const text=String(result?.text??info?.text??'').trim();
+  const rawSegments=Array.isArray(result?.segments)?result.segments:(Array.isArray(info?.segments)?info.segments:[]);
+  let segments=rawSegments.map(segment=>({start:offset+Math.max(0,Number(segment?.start||0)),end:offset+Math.max(0,Number(segment?.end??segment?.start??0)),text:String(segment?.text||'').trim()})).filter(segment=>segment.text);
+  if(!segments.length){const vtt=result?.vtt||info?.vtt||'';if(vtt)segments=segmentsFromVtt(vtt,offset);}
+  if(!segments.length&&text)segments=[{start,end,text}];
+  return {text,segments};
+}
+async function runCloudflareWhisperChunk(blob,start,end,credentials){
+  const audio=await blobToBase64(blob);
+  const url=`${CF_API_BASE}/${encodeURIComponent(credentials.accountId)}/ai/run/${CF_WHISPER_MODEL}`;
+  const body={audio,task:'translate',language:'yo',vad_filter:true,condition_on_previous_text:false,initial_prompt:'Yoruba conversational speech. Translate faithfully into clear natural English. Preserve personal names, place names, kinship terms, and culturally specific Yoruba words when a direct English replacement would lose meaning.'};
+  const response=await cloudflareApiFetch(url,{method:'POST',headers:{Authorization:`Bearer ${credentials.token}`,'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const data=await response.json().catch(()=>({}));
+  if(!response.ok||data.success===false){const detail=data?.errors?.[0]?.message||data?.error?.message||data?.message||`Cloudflare returned HTTP ${response.status}`;throw new Error(detail);}
+  return normalizeCloudflareWhisperResult(data,start,start,end);
+}
+
+async function transcribeMix(){
+  if(state.isRecording)return;
+  const credentials=readCloudflareCredentials();
+  const invalid=validateCloudflareCredentials(credentials.accountId,credentials.token);
+  if(invalid){els.transcriptionStatus.textContent='Add your Cloudflare Workers AI credentials in Settings before translating.';notify('Open AI Settings and add your Cloudflare credentials.');openAiSettings();return;}
+  els.transcribeBtn.disabled=true;els.transcribeBtn.textContent='Preparing…';
+  try{
+    const {buffer,label}=await translationInputBuffer();
+    const chunkSeconds=240,totalChunks=Math.max(1,Math.ceil(buffer.duration/chunkSeconds));
+    const allSegments=[],chunkTexts=[];
+    for(let index=0;index<totalChunks;index++){
+      const start=index*chunkSeconds,end=Math.min(buffer.duration,start+chunkSeconds);
+      els.transcribeBtn.textContent=`Translating ${index+1}/${totalChunks}`;
+      els.transcriptionStatus.innerHTML=`<span class="translation-progress">Preparing ${label} · ${formatTime(start)}–${formatTime(end)} · chunk ${index+1}/${totalChunks}</span>`;
+      await new Promise(resolve=>requestAnimationFrame(resolve));
+      const blob=encodeWavChunk16kMono(buffer,start,end);
+      els.transcriptionStatus.innerHTML=`<span class="translation-progress">OpenAI Whisper Large V3 Turbo via Cloudflare · chunk ${index+1}/${totalChunks}</span>`;
+      const translated=await runCloudflareWhisperChunk(blob,start,end,credentials);
+      if(translated.text)chunkTexts.push(translated.text);if(translated.segments.length)allSegments.push(...translated.segments);
+    }
+    state.transcriptSegments=allSegments.map(seg=>({start:Number(seg.start||0),end:Number(seg.end??seg.start??0),text:String(seg.text||'').trim()})).filter(seg=>seg.text).sort((a,b)=>a.start-b.start);
+    els.transcriptEditor.value=(chunkTexts.join(' ')||state.transcriptSegments.map(seg=>seg.text).join(' ')).trim();
+    els.transcriptionStatus.textContent=`English translation complete with OpenAI Whisper Large V3 Turbo via your Cloudflare account. ${state.transcriptSegments.length} timed caption segment${state.transcriptSegments.length===1?'':'s'} created from ${label}.`;
+    renderTranscript();updateButtons();notify('Yoruba → English translation complete.');
+  }catch(err){console.error(err);els.transcriptionStatus.textContent=`Translation failed: ${err.message||'Unknown error'}`;notify('Could not translate this audio. Open Settings to test your credentials.');}
+  finally{els.transcribeBtn.disabled=false;els.transcribeBtn.textContent='Translate Yoruba → English';updateButtons();}
+}
+
+if(els.aiSettingsBtn)els.aiSettingsBtn.addEventListener('click',openAiSettings);
+if(els.closeAiSettingsBtn)els.closeAiSettingsBtn.addEventListener('click',closeAiSettings);
+if(els.aiSettingsBackdrop)els.aiSettingsBackdrop.addEventListener('click',event=>{if(event.target===els.aiSettingsBackdrop)closeAiSettings();});
+if(els.toggleCfTokenBtn)els.toggleCfTokenBtn.addEventListener('click',()=>{const hidden=els.cfApiTokenInput?.type==='password';if(els.cfApiTokenInput)els.cfApiTokenInput.type=hidden?'text':'password';els.toggleCfTokenBtn.textContent=hidden?'Hide':'Show';});
+if(els.saveCfCredentialsBtn)els.saveCfCredentialsBtn.addEventListener('click',()=>{const {accountId,token,remember}=credentialsFromSettings();const invalid=validateCloudflareCredentials(accountId,token);if(invalid){setSettingsTestState(invalid,'bad');return;}writeCloudflareCredentials(accountId,token,remember);setSettingsTestState(remember?'Saved on this device.':'Saved for this browser session.','ok');notify('AI credentials saved.');});
+if(els.testCfCredentialsBtn)els.testCfCredentialsBtn.addEventListener('click',async()=>{const {accountId,token,remember}=credentialsFromSettings();setSettingsTestState('Testing Cloudflare Workers AI…');els.testCfCredentialsBtn.disabled=true;try{await testCloudflareCredentials(accountId,token);writeCloudflareCredentials(accountId,token,remember);setSettingsTestState('Connected · Whisper Large V3 Turbo is ready.','ok');notify('Cloudflare Workers AI connected.');}catch(err){console.error(err);setSettingsTestState(err.message||'Connection test failed.','bad');}finally{els.testCfCredentialsBtn.disabled=false;}});
+if(els.clearCfCredentialsBtn)els.clearCfCredentialsBtn.addEventListener('click',clearCloudflareCredentials);
+window.addEventListener('keydown',event=>{if(event.key==='Escape'&&!els.aiSettingsBackdrop?.hidden)closeAiSettings();});
+refreshCredentialState();
