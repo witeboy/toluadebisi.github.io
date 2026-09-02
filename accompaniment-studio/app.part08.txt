@@ -1,0 +1,160 @@
+
+/* Runtime v11: quality-controlled Yoruba verification + English translation. */
+const YORUBA_QUALITY_CHUNK_SECONDS=45;
+const YORUBA_LANGUAGE_CODE='yo';
+els.yorubaTranscriptEditor=$('yorubaTranscriptEditor');
+els.yorubaTranscriptMeta=$('yorubaTranscriptMeta');
+els.languageLockState=$('languageLockState');
+els.qualityWarningState=$('qualityWarningState');
+state.yorubaTranscriptSegments=Array.isArray(state.yorubaTranscriptSegments)?state.yorubaTranscriptSegments:[];
+state.yorubaTranscriptText=String(state.yorubaTranscriptText||'');
+
+function whisperQualityBody(task,audio){
+  return {
+    audio,
+    task,
+    language:YORUBA_LANGUAGE_CODE,
+    vad_filter:true,
+    condition_on_previous_text:false,
+    beam_size:5,
+    no_speech_threshold:0.5,
+    compression_ratio_threshold:2.0,
+    log_prob_threshold:-0.8,
+    hallucination_silence_threshold:1.5,
+    initial_prompt:task==='transcribe'
+      ?'The source language is Yoruba (yo), including Nigerian names, places, family terms, and occasional English code-switching. Transcribe the spoken Yoruba faithfully. Do not invent words during music, silence, crosstalk, or unclear audio.'
+      :'The source language is Yoruba (yo). Translate faithfully into clear natural English. Preserve names, places, family relationships, and culturally specific Yoruba terms when needed. Do not invent speech during music, silence, crosstalk, or unclear audio.'
+  };
+}
+
+function qualityFlagsForText(text=''){
+  const value=String(text||'').trim();
+  if(!value)return [];
+  const flags=[];
+  const tokens=value.toLowerCase().match(/[\p{L}\p{N}'’-]+/gu)||[];
+  if(tokens.length>=30){
+    const unique=new Set(tokens).size;
+    if(unique/Math.max(1,tokens.length)<0.18)flags.push('very repetitive output');
+    let run=1,maxRun=1;
+    for(let i=1;i<tokens.length;i++){if(tokens[i]===tokens[i-1]){run++;maxRun=Math.max(maxRun,run);}else run=1;}
+    if(maxRun>=8)flags.push('repetition loop');
+  }
+  const foreign=(value.match(/[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af\u0900-\u097f]/g)||[]).length;
+  if(value.length>80&&foreign/value.length>0.025)flags.push('unexpected non-Yoruba script');
+  return flags;
+}
+
+function renderYorubaVerification(){
+  if(els.yorubaTranscriptEditor)els.yorubaTranscriptEditor.value=state.yorubaTranscriptText||'';
+  if(els.yorubaTranscriptMeta){
+    const count=state.yorubaTranscriptSegments.length;
+    els.yorubaTranscriptMeta.textContent=count?`${count} timed Yorùbá segment${count===1?'':'s'} · source language locked to yo`:'Waiting for Yorùbá verification pass.';
+  }
+}
+
+function setQualityWarning(text='',kind=''){
+  if(!els.qualityWarningState)return;
+  els.qualityWarningState.textContent=text;
+  els.qualityWarningState.className=`quality-warning-state ${kind}`.trim();
+  els.qualityWarningState.hidden=!text;
+}
+
+async function runQualityWhisperPass(audio,start,end,credentials,task){
+  const response=await relayFetch('/whisper',credentials.accountId,credentials.token,{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(whisperQualityBody(task,audio))
+  });
+  const data=await response.json().catch(()=>({}));
+  if(!response.ok||data.success===false){
+    const detail=data?.error||data?.errors?.[0]?.message||data?.message||`Relay returned HTTP ${response.status}`;
+    throw new Error(detail);
+  }
+  return normalizeCloudflareWhisperResult(data,start,start,end);
+}
+
+async function transcribeMix(){
+  if(state.isRecording)return;
+  const credentials=readCloudflareCredentials();
+  const invalid=validateCloudflareCredentials(credentials.accountId,credentials.token);
+  if(invalid){
+    els.transcriptionStatus.textContent='Add your Cloudflare Workers AI credentials in Settings before translating.';
+    notify('Open AI Settings and add your Cloudflare credentials.');openAiSettings();return;
+  }
+  els.transcribeBtn.disabled=true;els.transcribeBtn.textContent='Preparing…';
+  setQualityWarning('');
+  try{
+    const {buffer,label}=await translationInputBuffer();
+    const totalChunks=Math.max(1,Math.ceil(buffer.duration/YORUBA_QUALITY_CHUNK_SECONDS));
+    const yorubaSegments=[],englishSegments=[],yorubaTexts=[],englishTexts=[],warnings=[];
+    state.yorubaTranscriptSegments=[];state.yorubaTranscriptText='';renderYorubaVerification();
+    state.transcriptSegments=[];els.transcriptEditor.value='';renderTranscript();
+    for(let index=0;index<totalChunks;index++){
+      const start=index*YORUBA_QUALITY_CHUNK_SECONDS,end=Math.min(buffer.duration,start+YORUBA_QUALITY_CHUNK_SECONDS);
+      const chunkLabel=`chunk ${index+1}/${totalChunks} · ${formatTime(start)}–${formatTime(end)}`;
+      els.transcribeBtn.textContent=`Verifying ${index+1}/${totalChunks}`;
+      els.transcriptionStatus.innerHTML=`<span class="translation-progress">Step 1/2 · Transcribing Yorùbá · ${chunkLabel}</span>`;
+      await new Promise(resolve=>requestAnimationFrame(resolve));
+      const blob=encodeWavChunk16kMono(buffer,start,end);
+      const audio=await blobToBase64(blob);
+
+      const yoruba=await runQualityWhisperPass(audio,start,end,credentials,'transcribe');
+      if(yoruba.text){
+        yorubaTexts.push(yoruba.text);
+        const flags=qualityFlagsForText(yoruba.text);
+        if(flags.length)warnings.push(`Yorùbá ${index+1}: ${flags.join(', ')}`);
+      }
+      if(yoruba.segments.length)yorubaSegments.push(...yoruba.segments);
+      else if(yoruba.text)yorubaSegments.push({start,end,text:yoruba.text});
+      state.yorubaTranscriptSegments=yorubaSegments.slice().sort((a,b)=>a.start-b.start);
+      state.yorubaTranscriptText=yorubaTexts.join(' ').trim();
+      renderYorubaVerification();
+
+      els.transcribeBtn.textContent=`Translating ${index+1}/${totalChunks}`;
+      els.transcriptionStatus.innerHTML=`<span class="translation-progress">Step 2/2 · Translating Yorùbá → English · ${chunkLabel}</span>`;
+      const english=await runQualityWhisperPass(audio,start,end,credentials,'translate');
+      if(english.text){
+        englishTexts.push(english.text);
+        const flags=qualityFlagsForText(english.text);
+        if(flags.length)warnings.push(`English ${index+1}: ${flags.join(', ')}`);
+      }
+      if(english.segments.length)englishSegments.push(...english.segments);
+      else if(english.text)englishSegments.push({start,end,text:english.text});
+
+      state.transcriptSegments=englishSegments
+        .map(seg=>({start:Number(seg.start||0),end:Number(seg.end??seg.start??0),text:String(seg.text||'').trim()}))
+        .filter(seg=>seg.text)
+        .sort((a,b)=>a.start-b.start);
+      els.transcriptEditor.value=englishTexts.join(' ').trim()||state.transcriptSegments.map(seg=>seg.text).join(' ');
+      renderTranscript();updateButtons();
+    }
+
+    state.yorubaTranscriptSegments=yorubaSegments
+      .map(seg=>({start:Number(seg.start||0),end:Number(seg.end??seg.start??0),text:String(seg.text||'').trim()}))
+      .filter(seg=>seg.text)
+      .sort((a,b)=>a.start-b.start);
+    state.yorubaTranscriptText=yorubaTexts.join(' ').trim()||state.yorubaTranscriptSegments.map(seg=>seg.text).join(' ');
+    renderYorubaVerification();
+
+    if(warnings.length){
+      const preview=warnings.slice(0,3).join(' · ');
+      setQualityWarning(`Review suggested: ${preview}${warnings.length>3?` · +${warnings.length-3} more`:''}`,'warn');
+    }else{
+      setQualityWarning('Quality checks passed: no obvious repetition-loop or unexpected-script warning was detected.','ok');
+    }
+    els.transcriptionStatus.textContent=`Two-pass processing complete. Source language was locked to Yorùbá (yo). ${state.yorubaTranscriptSegments.length} Yorùbá verification segments and ${state.transcriptSegments.length} English caption segments created from ${label}.`;
+    renderTranscript();updateButtons();notify('Yorùbá verification + English translation complete.');
+  }catch(err){
+    console.error(err);
+    els.transcriptionStatus.textContent=`Processing failed: ${err.message||'Unknown error'}`;
+    setQualityWarning('Processing stopped before completion. The partial Yorùbá/English text above may still be useful for diagnosis.','warn');
+    notify('Could not finish the Yorùbá verification and translation.');
+  }finally{
+    els.transcribeBtn.disabled=false;els.transcribeBtn.textContent='Verify + Translate';updateButtons();
+  }
+}
+
+if(els.languageLockState){
+  els.languageLockState.innerHTML='<strong>Source language: Yorùbá (yo)</strong><span>LOCKED · not auto-detected</span>';
+}
+renderYorubaVerification();
