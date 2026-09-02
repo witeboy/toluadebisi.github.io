@@ -1,0 +1,193 @@
+
+/* Runtime v13: multilingual single-pass timestamped STT. */
+const STT_RELEASE_VERSION='20260902-13';
+const STT_CHUNK_SECONDS=45;
+const STT_LANGUAGE_STORAGE_KEY='accompaniment-stt-language';
+
+const STT_LANGUAGES=[
+  ['auto','Auto-detect'],
+  ['en','English'],['fr','French'],['es','Spanish'],['pt','Portuguese'],['de','German'],['it','Italian'],['nl','Dutch'],['ru','Russian'],['zh','Chinese'],['yue','Cantonese'],['ja','Japanese'],['ko','Korean'],['ar','Arabic'],['hi','Hindi'],
+  ['yo','Yorùbá'],['ha','Hausa'],['sw','Swahili'],['af','Afrikaans'],['am','Amharic'],['so','Somali'],['sn','Shona'],['ln','Lingala'],
+  ['tr','Turkish'],['pl','Polish'],['uk','Ukrainian'],['el','Greek'],['he','Hebrew'],['fa','Persian'],['ur','Urdu'],['bn','Bengali'],['pa','Punjabi'],['ta','Tamil'],['te','Telugu'],['gu','Gujarati'],['mr','Marathi'],['ne','Nepali'],
+  ['id','Indonesian'],['ms','Malay'],['vi','Vietnamese'],['th','Thai'],['tl','Tagalog'],['jw','Javanese'],
+  ['sv','Swedish'],['no','Norwegian'],['da','Danish'],['fi','Finnish'],['is','Icelandic'],['cs','Czech'],['sk','Slovak'],['ro','Romanian'],['hu','Hungarian'],['bg','Bulgarian'],['hr','Croatian'],['sr','Serbian'],['sl','Slovenian'],['et','Estonian'],['lv','Latvian'],['lt','Lithuanian'],
+  ['ca','Catalan'],['eu','Basque'],['gl','Galician'],['cy','Welsh'],['sq','Albanian'],['mk','Macedonian'],['bs','Bosnian'],['ka','Georgian'],['hy','Armenian'],['az','Azerbaijani'],['kk','Kazakh'],['uz','Uzbek'],['tg','Tajik'],['mn','Mongolian'],['km','Khmer'],['lo','Lao'],['my','Myanmar'],['si','Sinhala'],['ml','Malayalam'],['kn','Kannada'],['as','Assamese']
+];
+
+els.transcriptionLanguage=$('transcriptionLanguage');
+
+function sttLanguageName(code){
+  const found=STT_LANGUAGES.find(([value])=>value===code);
+  return found?found[1]:String(code||'English');
+}
+
+function ensureSimpleSttUi(){
+  const panel=els.transcriptEditor?.closest('.transcript-panel');
+  if(!panel)return;
+
+  if(els.transcribeBtn)els.transcribeBtn.textContent='Transcribe to Text';
+  if(els.transcriptionSource)els.transcriptionSource.value='mix';
+
+  const lock=$('languageLockState');if(lock)lock.hidden=true;
+  const warning=$('qualityWarningState');if(warning)warning.hidden=true;
+
+  const controls=panel.querySelector('.transcription-controls');
+  if(controls){
+    const labels=Array.from(controls.querySelectorAll(':scope > label'));
+    const oldOutput=labels[1];
+    if(oldOutput){
+      const languageLabel=document.createElement('label');
+      languageLabel.textContent='Language';
+      const select=document.createElement('select');
+      select.id='transcriptionLanguage';
+      for(const [value,name] of STT_LANGUAGES){
+        const option=document.createElement('option');option.value=value;option.textContent=name;select.appendChild(option);
+      }
+      const saved=localStorage.getItem(STT_LANGUAGE_STORAGE_KEY)||'en';
+      select.value=STT_LANGUAGES.some(([value])=>value===saved)?saved:'en';
+      select.addEventListener('change',()=>localStorage.setItem(STT_LANGUAGE_STORAGE_KEY,select.value));
+      languageLabel.appendChild(select);
+      oldOutput.replaceWith(languageLabel);
+      els.transcriptionLanguage=select;
+    }
+  }
+
+  if(els.transcriptionStatus)els.transcriptionStatus.innerHTML='Record or import audio, choose the spoken language, then select <strong>Transcribe to Text</strong>.';
+
+  const grid=panel.querySelector('.dual-transcript-grid');
+  if(grid){
+    grid.style.gridTemplateColumns='1fr';
+    const fields=Array.from(grid.querySelectorAll('.transcript-field'));
+    if(fields[0])fields[0].hidden=true;
+    const remaining=fields[1]||fields[0];
+    if(remaining){
+      const head=remaining.querySelector('.transcript-field-head span');if(head)head.textContent='Timestamped transcript';
+      const small=remaining.querySelector('.transcript-field-head small');if(small)small.textContent='Whisper transcribe';
+    }
+  }
+  if(els.transcriptEditor)els.transcriptEditor.placeholder='Your timestamped transcript will appear here. You can edit it before export.';
+
+  const note=panel.querySelector('.quality-pipeline-note');
+  if(note)note.textContent='Single-pass speech-to-text only. The selected language is transcribed into timestamped text; no translation or dubbing is performed.';
+
+  const settings=$('aiSettingsBackdrop');
+  if(settings){
+    for(const dt of settings.querySelectorAll('.settings-model dt')){
+      const dd=dt.nextElementSibling;
+      if(!dd)continue;
+      if(dt.textContent.trim()==='Source language')dd.textContent='Selectable per transcription';
+      if(dt.textContent.trim()==='Quality mode'){dt.textContent='STT mode';dd.textContent='Single-pass timestamped transcription';}
+    }
+  }
+}
+
+function recordedMixDuration(){
+  let end=0;
+  for(const track of state.tracks){
+    for(const clip of track.clips)end=Math.max(end,Number(clip.start||0)+clipDuration(clip));
+  }
+  return end;
+}
+
+function selectedSttLanguage(){
+  return String(els.transcriptionLanguage?.value||localStorage.getItem(STT_LANGUAGE_STORAGE_KEY)||'en').trim().toLowerCase();
+}
+
+async function sttChunkBlob(source,start,end){
+  if(source==='source'){
+    if(!state.sourceBuffer)throw new Error('Load source media first or choose Recorded mix.');
+    return encodeWavChunk16kMono(state.sourceBuffer,start,end);
+  }
+  if(typeof perfRenderMixSlice!=='function')throw new Error('Performance audio renderer is unavailable. Refresh the app and try again.');
+  const rendered=await perfRenderMixSlice(start,end,{includeSource:false,mono:true});
+  return encodeWavChunk16kMono(rendered,0,Math.min(rendered.duration,end-start));
+}
+
+async function runSttChunk(blob,start,end,credentials,language){
+  const audio=await blobToBase64(blob);
+  const languageName=sttLanguageName(language);
+  const body={
+    audio,
+    task:'transcribe',
+    language,
+    vad_filter:true,
+    condition_on_previous_text:false,
+    beam_size:5,
+    no_speech_threshold:0.6,
+    compression_ratio_threshold:2.4,
+    log_prob_threshold:-1,
+    hallucination_silence_threshold:1.5,
+    initial_prompt:language==='auto'
+      ?'Transcribe the spoken language faithfully. Preserve names, numbers, punctuation, and natural code-switching. Do not invent speech during silence, music, crosstalk, or unclear audio.'
+      :`Transcribe ${languageName} speech faithfully. Preserve names, numbers, punctuation, and natural code-switching. Do not translate. Do not invent speech during silence, music, crosstalk, or unclear audio.`
+  };
+  const response=await relayFetch('/transcribe',credentials.accountId,credentials.token,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const data=await response.json().catch(()=>({}));
+  if(!response.ok||data.success===false){
+    const detail=data?.error||data?.errors?.[0]?.message||data?.message||`Relay returned HTTP ${response.status}`;
+    throw new Error(detail);
+  }
+  return normalizeCloudflareWhisperResult(data,start,start,end);
+}
+
+async function transcribeMix(){
+  if(state.isRecording)return;
+  const credentials=readCloudflareCredentials();
+  const invalid=validateCloudflareCredentials(credentials.accountId,credentials.token);
+  if(invalid){
+    els.transcriptionStatus.textContent='Add your Cloudflare Workers AI credentials in Settings before transcribing.';
+    notify('Open AI Settings and add your Cloudflare credentials.');openAiSettings();return;
+  }
+
+  const source=els.transcriptionSource?.value||'mix';
+  const language=selectedSttLanguage();
+  const languageName=sttLanguageName(language);
+  let duration=0,label='';
+  if(source==='source'){
+    if(!state.sourceBuffer){els.transcriptionStatus.textContent='Load source media first or choose Recorded mix.';return;}
+    duration=state.sourceBuffer.duration;label='Layer 1 source';
+  }else{
+    duration=recordedMixDuration();
+    if(duration<=0){els.transcriptionStatus.textContent='Record or import at least one take before transcribing the recorded mix, or choose Layer 1 source.';return;}
+    label='recorded mix';
+  }
+
+  els.transcribeBtn.disabled=true;els.transcribeBtn.textContent='Preparing…';
+  try{
+    const totalChunks=Math.max(1,Math.ceil(duration/STT_CHUNK_SECONDS));
+    const allSegments=[],chunkTexts=[];
+    state.transcriptSegments=[];els.transcriptEditor.value='';renderTranscript();
+
+    for(let index=0;index<totalChunks;index++){
+      const start=index*STT_CHUNK_SECONDS,end=Math.min(duration,start+STT_CHUNK_SECONDS);
+      els.transcribeBtn.textContent=`Transcribing ${index+1}/${totalChunks}`;
+      els.transcriptionStatus.innerHTML=`<span class="translation-progress">${languageName} STT · ${label} · ${formatTime(start)}–${formatTime(end)} · chunk ${index+1}/${totalChunks}</span>`;
+      await new Promise(resolve=>requestAnimationFrame(resolve));
+
+      const blob=await sttChunkBlob(source,start,end);
+      const result=await runSttChunk(blob,start,end,credentials,language);
+      if(result.text)chunkTexts.push(result.text);
+      if(result.segments.length)allSegments.push(...result.segments);
+      else if(result.text)allSegments.push({start,end,text:result.text});
+
+      state.transcriptSegments=allSegments
+        .map(seg=>({start:Number(seg.start||0),end:Number(seg.end??seg.start??0),text:String(seg.text||'').trim()}))
+        .filter(seg=>seg.text)
+        .sort((a,b)=>a.start-b.start);
+      els.transcriptEditor.value=(chunkTexts.join(' ')||state.transcriptSegments.map(seg=>seg.text).join(' ')).trim();
+      renderTranscript();updateButtons();
+    }
+
+    els.transcriptionStatus.textContent=`Transcription complete · ${languageName} · ${state.transcriptSegments.length} timestamped segment${state.transcriptSegments.length===1?'':'s'} created from ${label}.`;
+    renderTranscript();updateButtons();notify('Timestamped transcription complete.');
+  }catch(err){
+    console.error(err);
+    els.transcriptionStatus.textContent=`Transcription failed: ${err.message||'Unknown error'}`;
+    notify('Could not transcribe this audio. Open Settings to test your Cloudflare connection.');
+  }finally{
+    els.transcribeBtn.disabled=false;els.transcribeBtn.textContent='Transcribe to Text';updateButtons();
+  }
+}
+
+ensureSimpleSttUi();
+updateButtons();
