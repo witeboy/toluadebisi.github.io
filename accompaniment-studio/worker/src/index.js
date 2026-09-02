@@ -1,6 +1,7 @@
 const CF_API_BASE = 'https://api.cloudflare.com/client/v4/accounts';
 const CF_WHISPER_MODEL = '@cf/openai/whisper-large-v3-turbo';
 const MAX_REQUEST_BYTES = 16 * 1024 * 1024;
+const DEFAULT_LANGUAGE = 'en';
 const ALLOWED_ORIGINS = new Set([
   'https://witeboy.github.io',
   'http://localhost:8000',
@@ -64,11 +65,16 @@ function finiteNumber(value, fallback, min, max) {
   return Math.min(max, Math.max(min, parsed));
 }
 
-function whisperPrompt(task) {
-  if (task === 'transcribe') {
-    return 'The source language is Yoruba (yo), including Nigerian names, places, kinship terms, and code-switching into English. Transcribe the spoken Yoruba faithfully. Do not invent words during music, silence, crosstalk, or unclear audio.';
-  }
-  return 'The source language is Yoruba (yo). Translate faithfully into clear natural English. Preserve personal names, place names, family relationships, and culturally specific Yoruba terms when a direct English replacement would lose meaning. Do not invent speech during music, silence, crosstalk, or unclear audio.';
+function normalizeLanguage(value) {
+  const language = String(value ?? DEFAULT_LANGUAGE).trim().toLowerCase();
+  if (!language || language === 'auto') return 'auto';
+  if (!/^[a-z]{2,3}$/.test(language)) return null;
+  return language;
+}
+
+function transcriptionPrompt(language) {
+  const label = language === 'auto' ? 'the spoken language' : `language code ${language}`;
+  return `Transcribe ${label} faithfully into timestamped text. Preserve names, numbers, punctuation, and natural code-switching. Do not invent speech during silence, music, crosstalk, or unclear audio.`;
 }
 
 export default {
@@ -89,12 +95,13 @@ export default {
         service: 'accompaniment-studio-stt-relay',
         provider: 'Cloudflare Workers AI',
         model: CF_WHISPER_MODEL,
-        language: 'yo',
-        quality_mode: 'two-pass',
+        mode: 'single-pass-transcription',
+        default_language: DEFAULT_LANGUAGE,
+        auto_detect: true,
       }, 200, origin);
     }
 
-    if (!['/test', '/translate', '/whisper'].includes(url.pathname) || request.method !== 'POST') {
+    if (!['/test', '/transcribe', '/whisper', '/translate'].includes(url.pathname) || request.method !== 'POST') {
       return json({ error: 'Not found.' }, 404, origin);
     }
 
@@ -119,7 +126,13 @@ export default {
         if (!response.ok || data.success === false) {
           return json({ error: cloudflareError(data, `Cloudflare returned HTTP ${response.status}.`) }, response.status || 502, origin);
         }
-        return json({ ok: true, model: CF_WHISPER_MODEL, language: 'yo', quality_mode: 'two-pass' }, 200, origin);
+        return json({
+          ok: true,
+          model: CF_WHISPER_MODEL,
+          mode: 'single-pass-transcription',
+          default_language: DEFAULT_LANGUAGE,
+          auto_detect: true,
+        }, 200, origin);
       } catch (error) {
         console.error('Workers AI credential test failed');
         return json({ error: 'Could not reach Cloudflare Workers AI from the relay.' }, 502, origin);
@@ -147,23 +160,24 @@ export default {
       return json({ error: 'Audio payload is missing.' }, 400, origin);
     }
 
-    const task = url.pathname === '/translate'
-      ? 'translate'
-      : (body.task === 'transcribe' ? 'transcribe' : 'translate');
+    const language = normalizeLanguage(body.language);
+    if (!language) return json({ error: 'Language must be a Whisper language code such as en, fr, es, yo, ha, sw, or auto.' }, 400, origin);
 
+    // New clients use /transcribe. /translate remains only for backwards compatibility with cached older releases.
+    const task = url.pathname === '/translate' ? 'translate' : 'transcribe';
     const upstreamBody = {
       audio: body.audio,
       task,
-      language: 'yo',
       vad_filter: body.vad_filter !== false,
       condition_on_previous_text: false,
       beam_size: Math.round(finiteNumber(body.beam_size, 5, 1, 10)),
-      no_speech_threshold: finiteNumber(body.no_speech_threshold, 0.5, 0, 1),
-      compression_ratio_threshold: finiteNumber(body.compression_ratio_threshold, 2.0, 1, 5),
-      log_prob_threshold: finiteNumber(body.log_prob_threshold, -0.8, -5, 0),
+      no_speech_threshold: finiteNumber(body.no_speech_threshold, 0.6, 0, 1),
+      compression_ratio_threshold: finiteNumber(body.compression_ratio_threshold, 2.4, 1, 5),
+      log_prob_threshold: finiteNumber(body.log_prob_threshold, -1, -5, 0),
       hallucination_silence_threshold: finiteNumber(body.hallucination_silence_threshold, 1.5, 0.1, 10),
-      initial_prompt: String(body.initial_prompt || whisperPrompt(task)).slice(0, 1200),
+      initial_prompt: String(body.initial_prompt || transcriptionPrompt(language)).slice(0, 1200),
     };
+    if (language !== 'auto') upstreamBody.language = language;
 
     try {
       const response = await cloudflareFetch(
