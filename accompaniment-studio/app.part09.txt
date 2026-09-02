@@ -1,0 +1,236 @@
+
+/* Runtime v12: performance-only overrides. STT behavior is intentionally unchanged. */
+const PERF_RELEASE_VERSION='20260902-12';
+const PERF_EXPORT_SLICE_SECONDS=12;
+const PERF_WAVE_TILE_CSS_PX=1800;
+let perfWaveformScrollTimer=0;
+
+function drawWaveformToCanvas(canvas, buffer, startSec = 0, endSec = null, color = '#a78bfa') {
+  const rect = canvas.getBoundingClientRect();
+  const dpr = Math.min(1.5, window.devicePixelRatio || 1);
+  const width = Math.max(1, Math.floor(rect.width * dpr));
+  const height = Math.max(1, Math.floor(rect.height * dpr));
+  if (canvas.width !== width || canvas.height !== height) { canvas.width = width; canvas.height = height; }
+  const g = canvas.getContext('2d', { alpha: true });
+  g.clearRect(0, 0, width, height);
+  g.fillStyle = 'rgba(255,255,255,.03)';
+  g.fillRect(0, 0, width, height);
+  if (!buffer) return;
+  const channel = buffer.getChannelData(0);
+  const sr = buffer.sampleRate;
+  const safeEnd = Math.min(buffer.duration, endSec ?? buffer.duration);
+  const safeStart = Math.max(0, Math.min(startSec, safeEnd));
+  const s0 = Math.floor(safeStart * sr);
+  const s1 = Math.min(channel.length, Math.ceil(safeEnd * sr));
+  const length = Math.max(1, s1 - s0);
+  const step = Math.max(1, Math.floor(length / width));
+  const probeStep = Math.max(1, Math.floor(step / 6));
+  g.fillStyle = color;
+  for (let x = 0; x < width; x++) {
+    const from = s0 + x * step;
+    const to = Math.min(s1, from + step);
+    let min = 1, max = -1;
+    for (let i = from; i < to; i += probeStep) {
+      const value = channel[i] || 0;
+      if (value < min) min = value;
+      if (value > max) max = value;
+    }
+    const y1 = (1 - max) * height / 2;
+    const y2 = (1 - min) * height / 2;
+    g.fillRect(x, y1, 1, Math.max(1, y2 - y1));
+  }
+}
+
+function perfScheduleWaveDraw(canvas, buffer, startSec, endSec, color) {
+  const draw = () => {
+    if (!canvas.isConnected) return;
+    drawWaveformToCanvas(canvas, buffer, startSec, endSec, color);
+  };
+  if ('requestIdleCallback' in window) requestIdleCallback(draw, { timeout: 100 });
+  else requestAnimationFrame(draw);
+}
+
+function appendWaveformTiles(container, buffer, startSec = 0, endSec = null, color = '#e9d5ff') {
+  if (!buffer) return;
+  const end = Math.min(endSec ?? buffer.duration, buffer.duration);
+  const duration = Math.max(0, end - startSec);
+  if (!duration) return;
+
+  const pps = Math.max(0.01, state.pxPerSecond);
+  const clipWidth = duration * pps;
+  const viewport = Math.max(320, timelineViewportWidth());
+  const overscan = viewport * 1.5;
+  const scrollTimelinePx = Math.max(0, (els.timelineScroller?.scrollLeft || 0) - timelineLabelWidth());
+  const containerTimelineLeft = Number.parseFloat(container.style.left || '0') || 0;
+  const visibleStart = Math.max(0, scrollTimelinePx - overscan - containerTimelineLeft);
+  const visibleEnd = Math.min(clipWidth, scrollTimelinePx + viewport + overscan - containerTimelineLeft);
+  if (visibleEnd <= visibleStart) return;
+
+  const firstTile = Math.floor(visibleStart / PERF_WAVE_TILE_CSS_PX) * PERF_WAVE_TILE_CSS_PX;
+  for (let leftPx = firstTile; leftPx < visibleEnd; leftPx += PERF_WAVE_TILE_CSS_PX) {
+    const rightPx = Math.min(clipWidth, leftPx + PERF_WAVE_TILE_CSS_PX);
+    if (rightPx <= visibleStart) continue;
+    const tileStart = startSec + leftPx / pps;
+    const tileEnd = Math.min(end, startSec + rightPx / pps);
+    const canvas = document.createElement('canvas');
+    canvas.className = 'waveform-tile';
+    canvas.style.position = 'absolute';
+    canvas.style.left = `${leftPx}px`;
+    canvas.style.top = '0';
+    canvas.style.height = '100%';
+    canvas.style.width = `${Math.max(1, rightPx - leftPx)}px`;
+    container.appendChild(canvas);
+    perfScheduleWaveDraw(canvas, buffer, tileStart, tileEnd, color);
+  }
+}
+
+async function perfRenderMixSlice(sliceStart, sliceEnd, { includeSource = false, mono = false } = {}) {
+  const sampleRate = 44100;
+  const channels = mono ? 1 : 2;
+  const duration = Math.max(0.001, sliceEnd - sliceStart);
+  const OfflineCtx = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+  if (!OfflineCtx) throw new Error('Offline audio rendering is not supported in this browser.');
+  const offline = new OfflineCtx(channels, Math.max(1, Math.ceil(duration * sampleRate)), sampleRate);
+  const anySolo = state.tracks.some(track => track.solo);
+
+  for (const track of state.tracks) {
+    if (track.muted || (anySolo && !track.solo)) continue;
+    for (const clip of track.clips) {
+      const clipStart = Number(clip.start || 0);
+      const clipEnd = clipStart + clipDuration(clip);
+      const overlapStart = Math.max(sliceStart, clipStart);
+      const overlapEnd = Math.min(sliceEnd, clipEnd);
+      if (overlapEnd <= overlapStart) continue;
+      const sourceOffset = (clip.trimStart || 0) + (overlapStart - clipStart);
+      const destinationOffset = overlapStart - sliceStart;
+      const source = offline.createBufferSource();
+      const gain = offline.createGain();
+      source.buffer = clip.buffer;
+      gain.gain.value = track.volume;
+      source.connect(gain).connect(offline.destination);
+      source.start(destinationOffset, sourceOffset, overlapEnd - overlapStart);
+    }
+  }
+
+  if (includeSource && state.sourceBuffer) {
+    const overlapStart = Math.max(sliceStart, 0);
+    const overlapEnd = Math.min(sliceEnd, state.sourceBuffer.duration);
+    if (overlapEnd > overlapStart) {
+      const source = offline.createBufferSource();
+      const gain = offline.createGain();
+      source.buffer = state.sourceBuffer;
+      gain.gain.value = 0.9;
+      source.connect(gain).connect(offline.destination);
+      source.start(overlapStart - sliceStart, overlapStart, overlapEnd - overlapStart);
+    }
+  }
+
+  return offline.startRendering();
+}
+
+function perfWorkerCall(worker, type, payload = {}, transfer = []) {
+  const seq = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return new Promise((resolve, reject) => {
+    const onMessage = (event) => {
+      const data = event.data || {};
+      if (data.seq !== seq) return;
+      cleanup();
+      if (data.type === 'error') reject(new Error(data.message || 'MP3 worker failed.'));
+      else resolve(data);
+    };
+    const onError = (event) => {
+      cleanup();
+      reject(new Error(event.message || 'MP3 worker failed to load.'));
+    };
+    const cleanup = () => {
+      worker.removeEventListener('message', onMessage);
+      worker.removeEventListener('error', onError);
+    };
+    worker.addEventListener('message', onMessage);
+    worker.addEventListener('error', onError);
+    worker.postMessage({ type, seq, ...payload }, transfer);
+  });
+}
+
+function perfCreateMp3Worker() {
+  const url = new URL('mp3-worker.js', window.location.href);
+  url.searchParams.set('v', PERF_RELEASE_VERSION);
+  return new Worker(url.href);
+}
+
+function perfCancelledError() {
+  const error = new Error('Export cancelled.');
+  error.name = 'AbortError';
+  return error;
+}
+
+async function exportMp3() {
+  if (state.perfExportJob) {
+    state.perfExportJob.cancelled = true;
+    els.exportMp3Btn.textContent = 'Cancelling…';
+    notify('Cancelling export…');
+    return;
+  }
+
+  const totalDuration = projectEnd();
+  if (!Number.isFinite(totalDuration) || totalDuration <= 0) { notify('Nothing to export yet.'); return; }
+  if (typeof Worker === 'undefined') { notify('Background MP3 export requires Chrome or Edge.'); return; }
+
+  const job = { cancelled: false, worker: null };
+  state.perfExportJob = job;
+  els.exportMp3Btn.disabled = false;
+  els.exportMp3Btn.textContent = 'Cancel · 0%';
+  const mp3Parts = [];
+
+  try {
+    const worker = perfCreateMp3Worker();
+    job.worker = worker;
+    await perfWorkerCall(worker, 'init', { channels: 2, sampleRate: 44100, kbps: 192 });
+    const totalSlices = Math.max(1, Math.ceil(totalDuration / PERF_EXPORT_SLICE_SECONDS));
+
+    for (let index = 0; index < totalSlices; index++) {
+      if (job.cancelled) throw perfCancelledError();
+      const start = index * PERF_EXPORT_SLICE_SECONDS;
+      const end = Math.min(totalDuration, start + PERF_EXPORT_SLICE_SECONDS);
+      const rendered = await perfRenderMixSlice(start, end, { includeSource: els.includeSourceToggle.checked, mono: false });
+      if (job.cancelled) throw perfCancelledError();
+
+      const left = rendered.getChannelData(0).slice();
+      const right = (rendered.numberOfChannels > 1 ? rendered.getChannelData(1) : rendered.getChannelData(0)).slice();
+      const response = await perfWorkerCall(worker, 'encode', { left: left.buffer, right: right.buffer }, [left.buffer, right.buffer]);
+      if (response.data?.byteLength) mp3Parts.push(new Uint8Array(response.data));
+
+      const percent = Math.min(95, Math.round(((index + 1) / totalSlices) * 95));
+      els.exportMp3Btn.textContent = `Cancel · ${percent}%`;
+      await new Promise(resolve => setTimeout(resolve, 0));
+    }
+
+    if (job.cancelled) throw perfCancelledError();
+    els.exportMp3Btn.textContent = 'Finalizing · 98%';
+    const finished = await perfWorkerCall(worker, 'finish');
+    if (finished.data?.byteLength) mp3Parts.push(new Uint8Array(finished.data));
+    if (job.cancelled) throw perfCancelledError();
+
+    const name = `${baseName(state.sourceFileName) || 'accompaniment'}-mix.mp3`;
+    downloadBlob(new Blob(mp3Parts, { type: 'audio/mpeg' }), name);
+    els.exportMp3Btn.textContent = 'Export MP3';
+    notify('MP3 exported without blocking the editor.');
+  } catch (error) {
+    if (error?.name === 'AbortError') notify('Export cancelled.');
+    else { console.error(error); notify(`MP3 export failed: ${error?.message || 'Unknown error'}`); }
+  } finally {
+    try { job.worker?.terminate(); } catch {}
+    state.perfExportJob = null;
+    els.exportMp3Btn.textContent = 'Export MP3';
+    updateButtons();
+  }
+}
+
+if (els.timelineScroller) {
+  els.timelineScroller.addEventListener('scroll', () => {
+    clearTimeout(perfWaveformScrollTimer);
+    perfWaveformScrollTimer = setTimeout(() => {
+      if (!state.isRecording) renderTimeline();
+    }, 140);
+  }, { passive: true });
+}
