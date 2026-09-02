@@ -1,0 +1,126 @@
+
+/* Runtime v8: Cloudflare + OpenAI Whisper Yoruba-to-English translation. */
+els.transcriptionSource=$('transcriptionSource');
+els.sttEndpointInput=$('sttEndpointInput');
+els.saveSttEndpointBtn=$('saveSttEndpointBtn');
+els.sttBackendState=$('sttBackendState');
+
+function defaultSttEndpoint(){return String(document.documentElement.dataset.sttApi||'').trim().replace(/\/+$/,'');}
+function getSttEndpoint(){return String(localStorage.getItem('accompaniment-stt-endpoint')||defaultSttEndpoint()).trim().replace(/\/+$/,'');}
+function setBackendState(text,kind=''){if(!els.sttBackendState)return;els.sttBackendState.textContent=text;els.sttBackendState.className=`backend-state ${kind}`.trim();}
+
+async function testSttBackend(){
+  const endpoint=getSttEndpoint();
+  if(els.sttEndpointInput)els.sttEndpointInput.value=endpoint;
+  if(!endpoint){setBackendState('Backend URL not configured yet.','bad');return false;}
+  setBackendState('Checking Cloudflare backend…');
+  try{
+    const response=await fetch(`${endpoint}/health`,{cache:'no-store'});
+    const data=await response.json().catch(()=>({}));
+    if(!response.ok||!data.ok)throw new Error(data.error||`HTTP ${response.status}`);
+    setBackendState(`Connected · ${data.model||'whisper-1'}`,'ok');return true;
+  }catch(err){console.error(err);setBackendState('Backend unavailable — open settings and check the Worker URL.','bad');return false;}
+}
+
+function writeAscii(view,offset,text){for(let i=0;i<text.length;i++)view.setUint8(offset+i,text.charCodeAt(i));}
+function encodeWavChunk16kMono(buffer,startSec,endSec){
+  const targetRate=16000;
+  const inputRate=buffer.sampleRate;
+  const channels=Math.max(1,buffer.numberOfChannels);
+  const safeStart=Math.max(0,startSec);
+  const safeEnd=Math.min(buffer.duration,Math.max(safeStart,endSec));
+  const outputSamples=Math.max(1,Math.ceil((safeEnd-safeStart)*targetRate));
+  const out=new ArrayBuffer(44+outputSamples*2);
+  const view=new DataView(out);
+  writeAscii(view,0,'RIFF');view.setUint32(4,36+outputSamples*2,true);writeAscii(view,8,'WAVE');writeAscii(view,12,'fmt ');
+  view.setUint32(16,16,true);view.setUint16(20,1,true);view.setUint16(22,1,true);view.setUint32(24,targetRate,true);view.setUint32(28,targetRate*2,true);view.setUint16(32,2,true);view.setUint16(34,16,true);writeAscii(view,36,'data');view.setUint32(40,outputSamples*2,true);
+  const channelData=[];for(let ch=0;ch<channels;ch++)channelData.push(buffer.getChannelData(ch));
+  for(let i=0;i<outputSamples;i++){
+    const t0=safeStart+i/targetRate,t1=Math.min(safeEnd,safeStart+(i+1)/targetRate);
+    const s0=Math.max(0,Math.floor(t0*inputRate)),s1=Math.max(s0+1,Math.min(buffer.length,Math.ceil(t1*inputRate)));
+    let sum=0,count=0;
+    for(let s=s0;s<s1;s++){for(let ch=0;ch<channels;ch++){sum+=channelData[ch][s]||0;count++;}}
+    const sample=Math.max(-1,Math.min(1,count?sum/count:0));
+    view.setInt16(44+i*2,sample<0?sample*0x8000:sample*0x7fff,true);
+  }
+  return new Blob([out],{type:'audio/wav'});
+}
+
+async function translationInputBuffer(){
+  const choice=els.transcriptionSource?.value||'source';
+  if(choice==='mix'){
+    const hasClips=state.tracks.some(track=>track.clips.length);
+    if(!hasClips)throw new Error('Record or import at least one take before translating the recorded mix.');
+    return {buffer:await renderMixBuffer({includeSource:false,mono:true}),label:'recorded mix'};
+  }
+  if(!state.sourceBuffer)throw new Error('Load source media first.');
+  return {buffer:state.sourceBuffer,label:'Layer 1 source'};
+}
+
+async function transcribeMix(){
+  if(state.isRecording)return;
+  const endpoint=getSttEndpoint();
+  if(!endpoint){els.transcriptionStatus.textContent='Cloudflare backend is not configured yet. Open Cloudflare backend settings below and enter the Worker URL.';notify('Cloudflare translation backend is not configured.');return;}
+  els.transcribeBtn.disabled=true;els.transcribeBtn.textContent='Preparing…';
+  try{
+    const {buffer,label}=await translationInputBuffer();
+    const chunkSeconds=240;
+    const totalChunks=Math.max(1,Math.ceil(buffer.duration/chunkSeconds));
+    const allSegments=[],chunkTexts=[];
+    for(let index=0;index<totalChunks;index++){
+      const start=index*chunkSeconds,end=Math.min(buffer.duration,start+chunkSeconds);
+      els.transcribeBtn.textContent=`Translating ${index+1}/${totalChunks}`;
+      els.transcriptionStatus.innerHTML=`<span class="translation-progress">Preparing ${label} chunk ${index+1} of ${totalChunks} · ${formatTime(start)}–${formatTime(end)}</span>`;
+      await new Promise(resolve=>requestAnimationFrame(()=>resolve()));
+      const blob=encodeWavChunk16kMono(buffer,start,end);
+      const form=new FormData();
+      form.set('file',new File([blob],`yoruba-${String(index+1).padStart(2,'0')}.wav`,{type:'audio/wav'}));
+      form.set('model','whisper-1');
+      form.set('response_format','verbose_json');
+      form.set('temperature','0');
+      form.set('prompt','Translate the Yoruba speech into clear, natural English. Preserve proper names, family relationships, place names, and culturally specific terms accurately.');
+      els.transcriptionStatus.innerHTML=`<span class="translation-progress">Translating ${label} · chunk ${index+1} of ${totalChunks}</span>`;
+      const response=await fetch(`${endpoint}/translate?offset=${encodeURIComponent(start)}`,{method:'POST',body:form});
+      const data=await response.json().catch(()=>({}));
+      if(!response.ok)throw new Error(data.error||`Translation failed with HTTP ${response.status}`);
+      if(data.text)chunkTexts.push(String(data.text).trim());
+      if(Array.isArray(data.segments)&&data.segments.length)allSegments.push(...data.segments);
+      else if(data.text)allSegments.push({start,end,text:String(data.text).trim()});
+    }
+    state.transcriptSegments=allSegments
+      .map(seg=>({start:Number(seg.start||0),end:Number(seg.end??seg.start??0),text:String(seg.text||'').trim()}))
+      .filter(seg=>seg.text)
+      .sort((a,b)=>a.start-b.start);
+    els.transcriptEditor.value=(chunkTexts.join(' ')||state.transcriptSegments.map(seg=>seg.text).join(' ')).trim();
+    els.transcriptionStatus.textContent=`English translation complete. ${state.transcriptSegments.length} timed caption segment${state.transcriptSegments.length===1?'':'s'} created from ${label}.`;
+    renderTranscript();updateButtons();notify('Yoruba → English translation complete.');
+  }catch(err){
+    console.error(err);els.transcriptionStatus.textContent=`Translation failed: ${err.message||'Unknown error'}`;notify('Could not translate this audio.');
+  }finally{els.transcribeBtn.disabled=false;els.transcribeBtn.textContent='Translate Yoruba → English';updateButtons();}
+}
+
+function renderTranscript(){
+  els.captionList.innerHTML='';
+  for(const seg of state.transcriptSegments){
+    const row=document.createElement('button');row.type='button';row.className='caption-item interactive';
+    row.innerHTML=`<div class="stamp">${formatTime(seg.start)}–${formatTime(seg.end)}</div><div>${escapeHtml(seg.text)}</div>`;
+    row.title='Jump timeline to this caption';row.addEventListener('click',()=>seekTimeline(seg.start));els.captionList.appendChild(row);
+  }
+  if(!state.transcriptSegments.length)els.captionList.innerHTML='<div class="empty-list">English timestamped captions will appear here.</div>';
+}
+
+function updateButtons(){
+  const hasMedia=!!state.sourceObjectUrl;const hasClips=state.tracks.some(t=>t.clips.length);const hasSel=!!selectedClip();
+  els.recordBtn.disabled=!state.selectedTrackId||state.isRecording;els.stopBtn.disabled=!state.isRecording;
+  els.splitBtn.disabled=!hasSel;els.trimStartBtn.disabled=!hasSel;els.trimEndBtn.disabled=!hasSel;els.deleteClipBtn.disabled=!hasSel;
+  els.transcribeBtn.disabled=state.isRecording||(!state.sourceBuffer&&!hasClips);els.exportMp3Btn.disabled=!hasClips;
+  els.exportTranscriptBtn.disabled=!els.transcriptEditor.value.trim();els.exportCaptionsBtn.disabled=!state.transcriptSegments.length;els.playBtn.disabled=!hasMedia&&!hasClips;
+}
+
+if(els.saveSttEndpointBtn)els.saveSttEndpointBtn.addEventListener('click',async()=>{
+  const value=String(els.sttEndpointInput?.value||'').trim().replace(/\/+$/,'');
+  if(value)localStorage.setItem('accompaniment-stt-endpoint',value);else localStorage.removeItem('accompaniment-stt-endpoint');
+  await testSttBackend();
+});
+if(els.sttEndpointInput)els.sttEndpointInput.value=getSttEndpoint();
+testSttBackend();updateButtons();
