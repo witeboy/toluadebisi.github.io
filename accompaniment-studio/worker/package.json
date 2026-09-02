@@ -1,0 +1,13 @@
+{
+  "name": "accompaniment-studio-stt-worker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "check": "wrangler deploy --dry-run"
+  },
+  "devDependencies": {
+    "wrangler": "^4.36.0"
+  }
+}
