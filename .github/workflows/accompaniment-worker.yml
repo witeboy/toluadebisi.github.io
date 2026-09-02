@@ -23,7 +23,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Deploy Worker and bind OpenAI key
+      - name: Deploy BYOK Workers AI relay
         id: deploy
         uses: cloudflare/wrangler-action@v3
         with:
@@ -32,10 +32,6 @@ jobs:
           workingDirectory: accompaniment-studio/worker
           wranglerVersion: '4.36.0'
           command: deploy
-          secrets: |
-            OPENAI_API_KEY
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
 
       - name: Record deployment URL
         if: success()
