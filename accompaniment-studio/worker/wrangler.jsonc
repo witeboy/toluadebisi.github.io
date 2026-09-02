@@ -1,0 +1,23 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "accompaniment-studio-stt",
+  "main": "src/index.js",
+  "compatibility_date": "2026-09-01",
+  "workers_dev": true,
+  "observability": {
+    "enabled": true
+  },
+  "ratelimits": [
+    {
+      "name": "TRANSLATION_RATE_LIMITER",
+      "namespace_id": "26090101",
+      "simple": {
+        "limit": 20,
+        "period": 60
+      }
+    }
+  ],
+  "limits": {
+    "subrequests": 10
+  }
+}
