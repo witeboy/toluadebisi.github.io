@@ -1,6 +1,6 @@
 (async () => {
-  const version = '20260901-7';
-  const parts = ['app.part00.txt', 'app.part01.txt', 'app.part02.txt', 'app.part03.txt', 'app.part04.txt', 'app.part05.txt'];
+  const version = '20260901-8';
+  const parts = ['app.part00.txt', 'app.part01.txt', 'app.part02.txt', 'app.part03.txt', 'app.part04.txt', 'app.part05.txt', 'app.part06.txt'];
   const code = (await Promise.all(parts.map(async (name) => {
     const url = new URL(name, import.meta.url);
     url.searchParams.set('v', version);
