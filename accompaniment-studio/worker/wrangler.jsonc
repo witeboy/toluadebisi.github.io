@@ -12,7 +12,7 @@
       "name": "TRANSLATION_RATE_LIMITER",
       "namespace_id": "26090101",
       "simple": {
-        "limit": 20,
+        "limit": 60,
         "period": 60
       }
     }
