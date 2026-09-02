@@ -58,6 +58,19 @@ async function cloudflareFetch(accountId, token, path, options = {}) {
   });
 }
 
+function finiteNumber(value, fallback, min, max) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, parsed));
+}
+
+function whisperPrompt(task) {
+  if (task === 'transcribe') {
+    return 'The source language is Yoruba (yo), including Nigerian names, places, kinship terms, and code-switching into English. Transcribe the spoken Yoruba faithfully. Do not invent words during music, silence, crosstalk, or unclear audio.';
+  }
+  return 'The source language is Yoruba (yo). Translate faithfully into clear natural English. Preserve personal names, place names, family relationships, and culturally specific Yoruba terms when a direct English replacement would lose meaning. Do not invent speech during music, silence, crosstalk, or unclear audio.';
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -71,10 +84,17 @@ export default {
     if (!allowedOrigin(origin)) return json({ error: 'Origin not allowed.' }, 403, origin);
 
     if (request.method === 'GET' && url.pathname === '/health') {
-      return json({ ok: true, service: 'accompaniment-studio-stt-relay', provider: 'Cloudflare Workers AI', model: CF_WHISPER_MODEL }, 200, origin);
+      return json({
+        ok: true,
+        service: 'accompaniment-studio-stt-relay',
+        provider: 'Cloudflare Workers AI',
+        model: CF_WHISPER_MODEL,
+        language: 'yo',
+        quality_mode: 'two-pass',
+      }, 200, origin);
     }
 
-    if (!['/test', '/translate'].includes(url.pathname) || request.method !== 'POST') {
+    if (!['/test', '/translate', '/whisper'].includes(url.pathname) || request.method !== 'POST') {
       return json({ error: 'Not found.' }, 404, origin);
     }
 
@@ -99,7 +119,7 @@ export default {
         if (!response.ok || data.success === false) {
           return json({ error: cloudflareError(data, `Cloudflare returned HTTP ${response.status}.`) }, response.status || 502, origin);
         }
-        return json({ ok: true, model: CF_WHISPER_MODEL }, 200, origin);
+        return json({ ok: true, model: CF_WHISPER_MODEL, language: 'yo', quality_mode: 'two-pass' }, 200, origin);
       } catch (error) {
         console.error('Workers AI credential test failed');
         return json({ error: 'Could not reach Cloudflare Workers AI from the relay.' }, 502, origin);
@@ -127,13 +147,22 @@ export default {
       return json({ error: 'Audio payload is missing.' }, 400, origin);
     }
 
+    const task = url.pathname === '/translate'
+      ? 'translate'
+      : (body.task === 'transcribe' ? 'transcribe' : 'translate');
+
     const upstreamBody = {
       audio: body.audio,
-      task: 'translate',
+      task,
       language: 'yo',
       vad_filter: body.vad_filter !== false,
-      condition_on_previous_text: body.condition_on_previous_text === true,
-      initial_prompt: String(body.initial_prompt || 'Yoruba conversational speech. Translate faithfully into clear natural English. Preserve personal names, place names, kinship terms, and culturally specific Yoruba words when a direct English replacement would lose meaning.').slice(0, 1200),
+      condition_on_previous_text: false,
+      beam_size: Math.round(finiteNumber(body.beam_size, 5, 1, 10)),
+      no_speech_threshold: finiteNumber(body.no_speech_threshold, 0.5, 0, 1),
+      compression_ratio_threshold: finiteNumber(body.compression_ratio_threshold, 2.0, 1, 5),
+      log_prob_threshold: finiteNumber(body.log_prob_threshold, -0.8, -5, 0),
+      hallucination_silence_threshold: finiteNumber(body.hallucination_silence_threshold, 1.5, 0.1, 10),
+      initial_prompt: String(body.initial_prompt || whisperPrompt(task)).slice(0, 1200),
     };
 
     try {
@@ -153,7 +182,7 @@ export default {
       }
       return json(data, 200, origin);
     } catch (error) {
-      console.error('Workers AI translation relay failed');
+      console.error('Workers AI relay request failed');
       return json({ error: 'Could not reach Cloudflare Workers AI from the relay.' }, 502, origin);
     }
   },
